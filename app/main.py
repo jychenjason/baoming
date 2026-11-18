@@ -205,14 +205,7 @@ def create_app(
 
     @app.get("/admin/events/{event_id}", response_class=HTMLResponse)
     def admin_event_detail(request: Request, event_id: int):
-        event = events.get_event_detail(
-            settings.db_path, event_id, settings.timezone
-        )
-        if event is None:
-            raise HTTPException(status_code=404, detail="找不到活動。")
-        return templates.TemplateResponse(
-            request, "admin_event_detail.html", {"event": event}
-        )
+        return render_event_admin(request, event_id)
 
     @app.post("/admin/events/{event_id}/rotate-token")
     async def admin_event_rotate_token(request: Request, event_id: int):
@@ -221,6 +214,115 @@ def create_app(
         if token is None:
             raise HTTPException(status_code=404, detail="找不到活動。")
         return RedirectResponse("/admin/events", status_code=303)
+
+    @app.post("/admin/events/{event_id}/duplicate")
+    async def admin_event_duplicate(request: Request, event_id: int):
+        await csrf_protected_form(request)
+        duplicate_id = events.duplicate_event(settings.db_path, event_id, app.state.clock())
+        if duplicate_id is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return RedirectResponse(f"/admin/events/{duplicate_id}", status_code=303)
+
+    def render_event_admin(request: Request, event_id: int, *, message=None,
+                           pending_disable=None, values=None,
+                           status_code=200):
+        event = events.get_event_detail(settings.db_path, event_id, settings.timezone)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return templates.TemplateResponse(
+            request, "admin_event_detail.html",
+            {"event": event, "message": message, "pending_disable": pending_disable,
+             "values": values or {}},
+            status_code=status_code,
+        )
+
+    @app.post("/admin/events/{event_id}/groups")
+    async def admin_group_create(request: Request, event_id: int):
+        form = await csrf_protected_form(request)
+        error, _ = events.save_group(
+            settings.db_path, event_id, None, _form_text(form.get("title")),
+            form.get("required") == "1", app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "已新增群組。",
+            values={"new-group-title": _form_text(form.get("title")),
+                    "required-new-group": form.get("required") == "1"},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}")
+    async def admin_group_update(request: Request, event_id: int, group_id: int):
+        form = await csrf_protected_form(request)
+        error, _ = events.save_group(
+            settings.db_path, event_id, group_id, _form_text(form.get("title")),
+            form.get("required") == "1", app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "群組已更新。",
+            values={f"group-title-{group_id}": _form_text(form.get("title")),
+                    f"required-group-{group_id}": form.get("required") == "1"},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options")
+    async def admin_option_create(request: Request, event_id: int, group_id: int):
+        form = await csrf_protected_form(request)
+        error = events.save_option(
+            settings.db_path, event_id, group_id, None,
+            _form_text(form.get("label")), app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "已新增選項。",
+            values={f"new-option-{group_id}": _form_text(form.get("label"))},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options/{option_id}")
+    async def admin_option_update(request: Request, event_id: int, group_id: int, option_id: int):
+        form = await csrf_protected_form(request)
+        error = events.save_option(
+            settings.db_path, event_id, group_id, option_id,
+            _form_text(form.get("label")), app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "選項已更新。",
+            values={f"option-label-{option_id}": _form_text(form.get("label"))},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options/{option_id}/disable")
+    async def admin_option_disable(request: Request, event_id: int, group_id: int, option_id: int):
+        form = await csrf_protected_form(request)
+        confirmed = form.get("confirm") == "1"
+        success, uses, disabled = events.disable_option(
+            settings.db_path, event_id, group_id, option_id,
+            app.state.clock(), confirmed=confirmed,
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="找不到自訂選項。")
+        if not disabled:
+            warning = (
+                f"此選項已有 {uses} 筆報名使用。既有報名會保留原選項文字。"
+                if uses else "停用後此選項不再提供新報名。"
+            )
+            return render_event_admin(
+                request, event_id,
+                message=warning + "請再次確認。",
+                pending_disable=(group_id, option_id),
+            )
+        return render_event_admin(request, event_id, message="選項已停用；既有報名資料保留。")
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/order/{direction}")
+    async def admin_group_reorder(request: Request, event_id: int, group_id: int, direction: str):
+        form = await csrf_protected_form(request)
+        if not events.reorder_item(settings.db_path, event_id, None, group_id, direction, app.state.clock()):
+            raise HTTPException(status_code=404, detail="找不到自訂群組。")
+        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options/{option_id}/order/{direction}")
+    async def admin_option_reorder(request: Request, event_id: int, group_id: int,
+                                   option_id: int, direction: str):
+        await csrf_protected_form(request)
+        if not events.reorder_item(settings.db_path, event_id, group_id, option_id,
+                                   direction, app.state.clock()):
+            raise HTTPException(status_code=404, detail="找不到自訂選項。")
+        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
 
     @app.get("/e/{token}", response_class=HTMLResponse)
     def public_event(request: Request, token: str):

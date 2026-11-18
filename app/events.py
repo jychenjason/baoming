@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from datetime import datetime
@@ -17,6 +18,8 @@ TOKEN_LENGTH = 10
 TITLE_MAX = 100
 DESCRIPTION_MAX = 2000
 LOCATION_MAX = 200
+GROUP_TITLE_MAX = 50
+OPTION_LABEL_MAX = 50
 ATTENDANCE_GROUP_TITLE = "是否出席"
 ATTENDANCE_OPTIONS = ("出席", "不出席")
 
@@ -212,6 +215,191 @@ def get_event_detail(
     event = present_event(row, timezone_name)
     event["groups"] = group_rows
     return event
+
+
+def normalize_group_title(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return " ".join(normalized.split()).casefold()
+
+
+def _event_exists(conn: sqlite3.Connection, event_id: int) -> bool:
+    return conn.execute("SELECT 1 FROM events WHERE id = ?", (event_id,)).fetchone() is not None
+
+
+def _custom_group(conn: sqlite3.Connection, event_id: int, group_id: int):
+    return conn.execute(
+        "SELECT id FROM option_groups WHERE id = ? AND event_id = ? AND kind = 'custom'",
+        (group_id, event_id),
+    ).fetchone()
+
+
+def save_group(db_path: str, event_id: int, group_id: int | None,
+               title: str, required: bool, now: datetime) -> tuple[str | None, int | None]:
+    title = title.strip()
+    if not title:
+        return "請輸入群組標題。", None
+    if len(title) > GROUP_TITLE_MAX:
+        return f"群組標題不可超過 {GROUP_TITLE_MAX} 字。", None
+    normalized = normalize_group_title(title)
+    stamp = utc_stamp(now)
+    with db.open_db(db_path) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not _event_exists(conn, event_id):
+            return "找不到活動。", None
+        if group_id is not None and _custom_group(conn, event_id, group_id) is None:
+            return "找不到自訂群組。", None
+        duplicates = conn.execute(
+            "SELECT id, title FROM option_groups WHERE event_id = ?",
+            (event_id,),
+        ).fetchall()
+        if any(normalize_group_title(row["title"]) == normalized
+               and (group_id is None or int(row["id"]) != group_id) for row in duplicates):
+            return "群組標題不可與其他群組重複。", None
+        if group_id is None:
+            order = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM option_groups WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()[0]
+            cursor = conn.execute(
+                "INSERT INTO option_groups (event_id, kind, title, required, sort_order, created_at) VALUES (?, 'custom', ?, ?, ?, ?)",
+                (event_id, title, int(required), order, stamp),
+            )
+            result_id = int(cursor.lastrowid)
+        else:
+            conn.execute(
+                "UPDATE option_groups SET title = ?, required = ? WHERE id = ? AND event_id = ? AND kind = 'custom'",
+                (title, int(required), group_id, event_id),
+            )
+            result_id = group_id
+        conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (stamp, event_id))
+    return None, result_id
+
+
+def save_option(db_path: str, event_id: int, group_id: int, option_id: int | None,
+                label: str, now: datetime) -> str | None:
+    label = label.strip()
+    if not label:
+        return "請輸入選項文字。"
+    if len(label) > OPTION_LABEL_MAX:
+        return f"選項文字不可超過 {OPTION_LABEL_MAX} 字。"
+    stamp = utc_stamp(now)
+    with db.open_db(db_path) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _custom_group(conn, event_id, group_id) is None:
+            return "找不到自訂群組。"
+        if option_id is None:
+            order = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM options WHERE group_id = ?",
+                (group_id,),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO options (group_id, label, is_active, sort_order, created_at) VALUES (?, ?, 1, ?, ?)",
+                (group_id, label, order, stamp),
+            )
+        else:
+            exists = conn.execute(
+                "SELECT 1 FROM options WHERE id = ? AND group_id = ?",
+                (option_id, group_id),
+            ).fetchone()
+            if exists is None:
+                return "找不到自訂選項。"
+            conn.execute("UPDATE options SET label = ? WHERE id = ?", (label, option_id))
+        conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (stamp, event_id))
+    return None
+
+
+def disable_option(db_path: str, event_id: int, group_id: int,
+                   option_id: int, now: datetime, *, confirmed: bool = False) -> tuple[bool, int, bool]:
+    stamp = utc_stamp(now)
+    with db.open_db(db_path) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _custom_group(conn, event_id, group_id) is None:
+            return False, 0, False
+        option = conn.execute(
+            "SELECT is_active FROM options WHERE id = ? AND group_id = ?",
+            (option_id, group_id),
+        ).fetchone()
+        if option is None:
+            return False, 0, False
+        uses = conn.execute(
+            "SELECT COUNT(*) FROM registration_choices WHERE option_id = ?", (option_id,)
+        ).fetchone()[0]
+        if not confirmed:
+            return True, int(uses), False
+        conn.execute("UPDATE options SET is_active = 0 WHERE id = ?", (option_id,))
+        conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (stamp, event_id))
+    return True, int(uses), True
+
+
+def reorder_item(db_path: str, event_id: int, group_id: int | None,
+                 item_id: int, direction: str, now: datetime) -> bool:
+    if direction not in {"up", "down"}:
+        return False
+    with db.open_db(db_path) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if group_id is None:
+            rows = conn.execute(
+                "SELECT id, sort_order FROM option_groups WHERE event_id = ? AND kind = 'custom' ORDER BY sort_order, id",
+                (event_id,),
+            ).fetchall()
+        else:
+            if _custom_group(conn, event_id, group_id) is None:
+                return False
+            rows = conn.execute(
+                "SELECT id, sort_order FROM options WHERE group_id = ? ORDER BY sort_order, id",
+                (group_id,),
+            ).fetchall()
+        ids = [int(row["id"]) for row in rows]
+        if item_id not in ids:
+            return False
+        index = ids.index(item_id)
+        other = index - 1 if direction == "up" else index + 1
+        if not 0 <= other < len(ids):
+            return True
+        ids[index], ids[other] = ids[other], ids[index]
+        table = "option_groups" if group_id is None else "options"
+        stamp = utc_stamp(now)
+        for order, current_id in enumerate(ids):
+            conn.execute(f"UPDATE {table} SET sort_order = ? WHERE id = ?", (order, current_id))
+        conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (stamp, event_id))
+    return True
+
+
+def duplicate_event(db_path: str, event_id: int, now: datetime) -> int | None:
+    stamp = utc_stamp(now)
+    with db.open_db(db_path) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        source = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        if source is None:
+            return None
+        token = _unique_token(conn)
+        title = source["title"]
+        suffix = "（複本）"
+        title = title[: TITLE_MAX - len(suffix)] + suffix
+        cursor = conn.execute(
+            "INSERT INTO events (token, title, description, location, starts_at, registration_deadline_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)",
+            (token, title, source["description"], source["location"], source["starts_at"],
+             source["registration_deadline_at"], stamp, stamp),
+        )
+        new_event_id = int(cursor.lastrowid)
+        groups = conn.execute(
+            "SELECT * FROM option_groups WHERE event_id = ? ORDER BY sort_order, id", (event_id,)
+        ).fetchall()
+        for group in groups:
+            cursor = conn.execute(
+                "INSERT INTO option_groups (event_id, kind, title, required, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (new_event_id, group["kind"], group["title"], group["required"], group["sort_order"], stamp),
+            )
+            new_group_id = int(cursor.lastrowid)
+            options = conn.execute(
+                "SELECT * FROM options WHERE group_id = ? ORDER BY sort_order, id", (group["id"],)
+            ).fetchall()
+            conn.executemany(
+                "INSERT INTO options (group_id, label, is_active, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
+                [(new_group_id, option["label"], option["is_active"], option["sort_order"], stamp)
+                 for option in options],
+            )
+    return new_event_id
 
 
 def rotate_token(db_path: str, event_id: int, now: datetime) -> str | None:

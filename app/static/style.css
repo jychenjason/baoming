@@ -114,6 +114,32 @@ h1 {
   width: auto;
 }
 
+.form input[type="checkbox"] {
+  width: auto;
+}
+
+.inline-actions,
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.option-row {
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.inline-actions form {
+  margin: 0;
+}
+
+.option-row > .form {
+  flex: 1;
+  margin: 0;
+}
+
 .stats,
 .roster {
   display: grid;

@@ -4,32 +4,99 @@
 
 {% block content %}
 <p><a href="/admin/events">返回活動列表</a></p>
-
 <h1>{{ event.title }}</h1>
 <p>狀態：{{ event.status_label }}</p>
 
+{% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
+
 <dl class="details">
-  <dt>說明</dt>
-  <dd class="pre-line">{{ event.description or '—' }}</dd>
-  <dt>地點</dt>
-  <dd>{{ event.location or '—' }}</dd>
-  <dt>活動開始時間</dt>
-  <dd>{{ event.starts_label }}</dd>
-  <dt>報名截止時間</dt>
-  <dd>{{ event.deadline_label }}</dd>
+  <dt>說明</dt><dd class="pre-line">{{ event.description or '—' }}</dd>
+  <dt>地點</dt><dd>{{ event.location or '—' }}</dd>
+  <dt>活動開始時間</dt><dd>{{ event.starts_label }}</dd>
+  <dt>報名截止時間</dt><dd>{{ event.deadline_label }}</dd>
 </dl>
+
+<form method="post" action="/admin/events/{{ event.id }}/duplicate">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <button class="button" type="submit">複製活動為草稿</button>
+</form>
 
 <h2>選項群組</h2>
 {% for group in event.groups %}
 <section class="card">
-  <h3>{{ group.title }}{% if group.required %}（必填）{% else %}（選填）{% endif %}</h3>
-  <ul>
-    {% for option in group.options %}
-    <li>{{ option.label }}{% if not option.is_active %}（已停用）{% endif %}</li>
-    {% endfor %}
-  </ul>
+  {% if group.kind == 'attendance' %}
+  <h3>{{ group.title }}（固定必填）</h3>
+  <ul>{% for option in group.options %}<li>{{ option.label }}</li>{% endfor %}</ul>
+  {% else %}
+  <div class="page-head">
+    <h3>{{ group.title }}</h3>
+    <div class="inline-actions">
+      <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/order/up">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button class="button" type="submit" aria-label="群組上移">↑</button>
+      </form>
+      <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/order/down">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button class="button" type="submit" aria-label="群組下移">↓</button>
+      </form>
+    </div>
+  </div>
+  <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="group-title-{{ group.id }}">群組標題</label>
+    <input id="group-title-{{ group.id }}" name="title" maxlength="50" required value="{{ values.get('group-title-' ~ group.id, group.title) }}">
+    <label><input type="checkbox" name="required" value="1" {% if values.get('required-group-' ~ group.id, group.required) %}checked{% endif %}> 必填</label>
+    <button class="button" type="submit">儲存群組</button>
+  </form>
+
+  <h4>選項</h4>
+  {% for option in group.options %}
+  <div class="option-row">
+    <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/options/{{ option.id }}" class="form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label for="option-label-{{ option.id }}">選項文字{% if not option.is_active %}（已停用）{% endif %}</label>
+      <input id="option-label-{{ option.id }}" name="label" maxlength="50" required value="{{ values.get('option-label-' ~ option.id, option.label) }}">
+      <button class="button" type="submit">儲存文字</button>
+    </form>
+    <div class="inline-actions">
+      <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/options/{{ option.id }}/order/up">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button class="button" type="submit" aria-label="選項上移">↑</button>
+      </form>
+      <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/options/{{ option.id }}/order/down">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button class="button" type="submit" aria-label="選項下移">↓</button>
+      </form>
+      {% if option.is_active %}
+      <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/options/{{ option.id }}/disable"
+            onsubmit="return confirm('停用後此選項不再提供新報名。既有報名及其原選項文字會保留。確定停用？')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        {% if pending_disable == (group.id, option.id) %}<input type="hidden" name="confirm" value="1">{% endif %}
+        <button class="button" type="submit">停用</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/options" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="new-option-{{ group.id }}">新增選項</label>
+    <input id="new-option-{{ group.id }}" name="label" maxlength="50" required value="{{ values.get('new-option-' ~ group.id, '') }}">
+    <button class="button" type="submit">新增選項</button>
+  </form>
+  {% endif %}
 </section>
-{% else %}
-<p>這個活動還沒有選項群組。</p>
 {% endfor %}
+
+<section class="card">
+  <h3>新增自訂群組</h3>
+  <form method="post" action="/admin/events/{{ event.id }}/groups" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="new-group-title">群組標題</label>
+    <input id="new-group-title" name="title" maxlength="50" required value="{{ values.get('new-group-title', '') }}">
+    <label><input type="checkbox" name="required" value="1" {% if values.get('required-new-group', true) %}checked{% endif %}> 必填</label>
+    <button class="button primary" type="submit">新增群組</button>
+  </form>
+</section>
 {% endblock %}
