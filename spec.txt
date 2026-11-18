@@ -1,0 +1,463 @@
+# 報名網站規格書
+
+版本：1.0（設計定案）
+狀態：規格完成，尚未開始實作
+
+---
+
+## 1. 專案概述
+
+本專案是一個自架於 VPS 的「活動報名＋餐點登記」網站，用來取代 LINE 的「活動」功能，並補足其選項設計不足的問題。
+
+核心目標：
+
+- 管理員可建立活動、設定多個單選選項群組，並即時查看報名狀況。
+- 參與者無需註冊帳號，通過一題數學驗證後輸入姓名即可報名。
+- 參與者與管理員都能看到即時名單與統計。
+- 以 Docker 形式交付，可部署於 VPS，具備自動 TLS、備份與更新流程。
+
+非目標（v1 明確不做）：
+
+- 參與者帳號、密碼、Email 或手機驗證
+- 多選（可勾選多個）選項群組
+- 選項名額上限
+- 金流、通知（Email／LINE／簡訊）
+- 公開活動目錄或搜尋
+- 多管理員與權限分級、操作稽核紀錄
+- 檔案上傳、圖片
+- 瀏覽器 E2E 測試、CI/CD、異地備份
+
+---
+
+## 2. 名詞定義
+
+| 名詞 | 定義 |
+| --- | --- |
+| 活動（Event） | 一次報名活動，擁有獨立公開連結、選項群組與報名資料 |
+| 公開連結 | `/e/{token}`，token 為不可猜測的隨機字串（10 碼） |
+| 選項群組（Group） | 一組單選選項，群組內最多選一個 |
+| 出席群組 | 每個活動內建、必填的群組，選項固定為「出席」與「不出席」 |
+| 自訂群組 | 管理員建立的群組（例如主餐、飲料），僅在出席時顯示與送出 |
+| 報名（Registration） | 一位參與者對一個活動的作答，同一活動內以姓名唯一識別 |
+| 名單頁 | 顯示統計與所有報名資料的頁面 |
+
+---
+
+## 3. 角色與權限
+
+### 3.1 參與者（無帳號）
+
+- 取得活動公開連結後，先通過數學驗證（見 6.1），驗證結果以 cookie 保留 24 小時。
+- 通過驗證後可填寫報名表、查看名單頁。
+- 名單頁對所有通過驗證者公開（姓名、出席狀態、各群組選擇、備註、最後更新時間），不顯示任何聯絡資訊或 IP。
+- 同一瀏覽器以 cookie 記憶「我在本活動的報名」，再次開啟時預填。
+
+### 3.2 管理員（單一密碼）
+
+- 以環境變數 `ADMIN_PASSWORD` 登入，登入後取得 session cookie，12 小時後失效。
+- 不做帳號管理、角色分級或多人同時登入限制。
+- 管理員功能見第 8 節。
+
+---
+
+## 4. 技術架構
+
+| 項目 | 選擇 |
+| --- | --- |
+| 語言／框架 | Python 3.12、FastAPI、Jinja2 伺服器端渲染 |
+| 前端 | 原生 HTML／CSS＋少量 JS，無前端框架、無 build step |
+| 資料庫 | SQLite 單檔（WAL 模式） |
+| 伺服器 | uvicorn（單一 worker，SQLite 併發足夠） |
+| 容器 | Docker／docker compose |
+| TLS | Caddy 容器自動申請 Let's Encrypt 憑證（預設） |
+| 測試 | pytest 整合測試＋compose smoke 腳本 |
+
+設計原則：
+
+- 伺服器端渲染，所有表單以一般 POST 送出，無需 JavaScript 也能完成報名。
+- 單一容器內只跑一個 app 程序；狀態集中於 SQLite 與簽章 cookie。
+- 所有輸入在伺服器端驗證；所有輸出經模板自動跳脫。
+
+---
+
+## 5. 資料模型
+
+### 5.1 events
+
+| 欄位 | 型別 | 說明 |
+| --- | --- | --- |
+| id | INTEGER PK | |
+| token | TEXT UNIQUE NOT NULL | 公開連結 token，10 碼隨機（base32，去除易混淆字元） |
+| title | TEXT NOT NULL | 活動標題，1–100 字 |
+| description | TEXT | 說明文字（純文字，保留換行），上限 2000 字 |
+| location | TEXT | 地點，上限 200 字 |
+| starts_at | TEXT NULL | 活動開始時間，UTC ISO 8601 |
+| registration_deadline_at | TEXT NULL | 報名截止時間，UTC ISO 8601 |
+| status | TEXT NOT NULL | `draft` / `open` / `closed`，預設 `draft` |
+| created_at | TEXT NOT NULL | UTC ISO 8601 |
+| updated_at | TEXT NOT NULL | UTC ISO 8601 |
+
+### 5.2 option_groups
+
+| 欄位 | 型別 | 說明 |
+| --- | --- | --- |
+| id | INTEGER PK | |
+| event_id | INTEGER NOT NULL | 外鍵 → events |
+| kind | TEXT NOT NULL | `attendance` / `custom` |
+| title | TEXT NOT NULL | 群組標題，例如「主餐」 |
+| required | INTEGER NOT NULL | 1＝必填、0＝選填；出席群組固定為 1 |
+| sort_order | INTEGER NOT NULL | 顯示順序 |
+| created_at | TEXT NOT NULL | |
+
+規則：
+
+- 每個活動建立時自動產生一個 `kind='attendance'` 的群組，標題固定「是否出席」，不可刪除、不可改為選填。
+- `kind='custom'` 的群組僅在參與者選擇「出席」時顯示與送出。
+- v1 所有群組皆為單選。
+
+### 5.3 options
+
+| 欄位 | 型別 | 說明 |
+| --- | --- | --- |
+| id | INTEGER PK | |
+| group_id | INTEGER NOT NULL | 外鍵 → option_groups |
+| label | TEXT NOT NULL | 選項文字，1–50 字 |
+| is_active | INTEGER NOT NULL | 1＝啟用、0＝停用（軟刪除） |
+| sort_order | INTEGER NOT NULL | 顯示順序 |
+| created_at | TEXT NOT NULL | |
+
+規則：
+
+- 出席群組固定兩個選項：「出席」「不出席」，不可刪除、不可停用、不可改名。
+- 自訂選項刪除時僅設 `is_active=0`，不實體刪除。
+- 停用選項不出現在報名表，但仍保留於既有報名紀錄與統計（標示「已停用」）。
+
+### 5.4 registrations
+
+| 欄位 | 型別 | 說明 |
+| --- | --- | --- |
+| id | INTEGER PK | |
+| event_id | INTEGER NOT NULL | 外鍵 → events |
+| name | TEXT NOT NULL | 參與者輸入的原始姓名，1–50 字 |
+| name_normalized | TEXT NOT NULL | 正規化姓名，用於唯一性比對 |
+| attendance | TEXT NOT NULL | `attending` / `not_attending` |
+| note | TEXT NULL | 備註，上限 100 字 |
+| created_at | TEXT NOT NULL | 第一次送出時間（覆蓋時不變） |
+| updated_at | TEXT NOT NULL | 最後更新時間 |
+
+唯一性：
+
+- `UNIQUE(event_id, name_normalized)`：同一活動內一個姓名僅一筆報名。
+- 姓名正規化：Unicode NFKC、去除前後空白、連續空白合併為一個半形空格、Latin 字母轉小寫（casefold）。
+- 同名視為同一人；如需不同人同名，v1 不接受（可由管理員代為加註區別，例如「陳小明（弟）」）。
+
+### 5.5 registration_choices
+
+| 欄位 | 型別 | 說明 |
+| --- | --- | --- |
+| id | INTEGER PK | |
+| registration_id | INTEGER NOT NULL | 外鍵 → registrations |
+| group_id | INTEGER NOT NULL | 外鍵 → option_groups |
+| option_id | INTEGER NOT NULL | 外鍵 → options |
+| option_label | TEXT NOT NULL | 送出當下的選項文字快照 |
+| group_title | TEXT NOT NULL | 送出當下的群組標題快照 |
+
+規則：
+
+- 每筆報名對每個群組最多一列。
+- 「不出席」時僅保留出席群組的選擇，不儲存任何自訂群組選擇。
+- 選填群組未選時不建立資料列。
+- 快照欄位確保選項事後被改名或停用時，歷史名單仍可讀。
+
+### 5.6 儲存與併發
+
+- SQLite 啟用 WAL 與 `busy_timeout`。
+- 報名寫入以單一交易完成（檢查同名 → 新增或覆蓋 → 寫入 choices）。
+- 資料庫檔案位於容器掛載的 `./data/`。
+
+---
+
+## 6. 參與者流程
+
+### 6.1 數學驗證
+
+- 活動頁首次進入時顯示一題加法：二位數＋一位數，和 ≤ 100（例如 47＋8）。
+- 題目由伺服器端產生，答案存於簽章 session，不以明文出現在 HTML。
+- 答對後 session 標記為已驗證，有效期 24 小時（每個活動連結共用）。
+
+> 定案變更：驗證以「每個瀏覽器 session 一次」為準（Q1 (a)），非每次送出都重新出題。
+
+- 答錯：顯示錯誤訊息並重新產生題目。
+- 驗證僅為防機器人門檻，不具身分識別意義。
+
+### 6.2 報名頁（單頁）
+
+版面由上而下：
+
+1. 活動資訊：標題、日期時間、地點、說明、截止時間（若有）。
+2. 姓名輸入（必填，1–50 字）。
+3. 出席群組（必填，單選）。
+4. 自訂群組（依 `sort_order`）：必填者需選一項；選填者提供明確的「不選」選項（不儲存選擇）。
+5. 備註（選填，100 字）。
+6. 「送出報名」按鈕。
+7. 「已報名資料」按鈕（導向名單頁）。
+
+行為：
+
+- 選擇「不出席」時，以 CSS/JS 隱藏自訂群組並停用其輸入（不送出）；切回「出席」時重新顯示，先前的選擇清空。
+- 若 JavaScript 未執行，後端仍以 `attendance` 為準忽略自訂群組資料。
+- cookie 存有本活動的報名識別（registration id＋活動 token 的簽章值）時，開啟頁面即預填姓名、出席、各群組選擇與備註。
+
+### 6.3 送出與同名覆蓋
+
+1. 伺服器端驗證：活動狀態為 `open`、未過截止時間、姓名合法、必填群組皆有選擇、所選選項屬於該活動且為啟用狀態、備註長度。
+2. 以正規化姓名查詢同活動既有報名：
+   - 不存在 → 建立新報名，更新 cookie，導向名單頁。
+   - 存在 → 顯示確認頁：「已有同名報名（顯示目前資料），是否覆蓋？」提供「覆蓋」與「返回修改」。
+3. 確認覆蓋 → 更新該筆報名的出席、備註與 choices，更新 `updated_at`，保留 `created_at`，導向名單頁。
+4. 活動已截止或非開放狀態 → 拒絕送出並顯示「本活動已截止報名」。
+
+### 6.4 名單頁
+
+- 路徑：`/e/{token}/registrations`，需先通過數學驗證。
+- 頁首統計（見第 10 節）。
+- 名單內容：姓名、出席狀態、各群組選擇、備註、最後更新時間；依 `created_at` 由舊到新排序。
+- 桌機以表格呈現；手機（寬度 < 768px）以卡片呈現，每張卡片一位參與者。
+- 頁面提供「回報名頁」與「結束」按鈕，兩者皆導回報名頁（不使用 `window.close()`）。
+- 頁面每 30 秒自動重新整理（`<meta http-equiv="refresh">` 或等效方式），讓現場可看到最新狀況；不引入 WebSocket。
+
+---
+
+## 7. 活動狀態機
+
+```
+draft ──(管理員開放)──> open ──(管理員關閉／到達截止時間)──> closed
+  ^                      |                                  |
+  └──────(管理員重開)─────┴──────────(管理員重開)─────────────┘
+```
+
+- `draft`：只有管理員可見與編輯，公開連結顯示「活動尚未開放」。
+- `open`：可報名、可查看名單。
+- `closed`：唯讀；公開頁顯示名單與「已截止」提示，拒絕任何送出。
+- 截止時間到達時，系統在請求處理時即視為 `closed`（不需背景排程）；管理員可重新開放（此時保留原截止時間，除非另行修改）。
+- 管理員可隨時手動關閉或重新開放。
+
+---
+
+## 8. 管理員功能
+
+### 8.1 登入
+
+- `/admin/login`：密碼輸入（單一欄位）。
+- 密碼與 `ADMIN_PASSWORD` 以常數時間比較。
+- 登入失敗限速：同一 IP 每分鐘 5 次，超過回 429。
+- session 有效期 12 小時；提供登出。
+
+### 8.2 活動管理
+
+- 活動列表：標題、狀態、報名數、截止時間、公開連結（可複製）。
+- 建立活動：標題（必填）、說明、地點、活動時間、截止時間；同時可建立多個自訂群組與其選項（至少一組、每組至少兩個選項，或允許先建立稍後補齊）。
+- 編輯活動：所有欄位與群組／選項皆可修改；可新增群組、調整順序、停用選項。
+- 停用或刪除已被選擇的選項時，需顯示二次確認，說明既有報名將保留原選項文字。
+- 狀態操作：開放、關閉、重新開放。
+- 複製活動：複製標題（加註「（複本）」）、說明、地點、群組與選項，狀態為 `draft`，不含任何報名資料。
+- 重新產生公開連結 token：二次確認後舊連結立即失效。
+
+### 8.3 報名管理
+
+- 查看任一活動的完整名單與統計（與名單頁相同資料，另可看到所有欄位）。
+- 匯出 CSV：UTF-8 含 BOM（Excel 可直接開啟）。
+  - 欄位：姓名、出席狀態、備註、建立時間、最後更新時間，之後每個群組一欄（欄名為群組標題，值為選項文字；停用選項加註「（已停用）」）。
+- 匯出 JSON：完整活動結構、群組、選項與報名資料。
+- 刪除單筆報名（二次確認）。
+- 代為新增報名：與參與者表單相同驗證，可指定姓名。
+- 代為修改報名：可改姓名、出席、各群組選擇、備註；改名時同樣檢查唯一性。
+
+### 8.4 管理員路由（規劃）
+
+| 方法 | 路徑 | 功能 |
+| --- | --- | --- |
+| GET | `/admin/login` | 登入頁 |
+| POST | `/admin/login` | 登入 |
+| POST | `/admin/logout` | 登出 |
+| GET | `/admin/events` | 活動列表 |
+| GET/POST | `/admin/events/new` | 建立活動 |
+| GET/POST | `/admin/events/{id}` | 編輯活動 |
+| POST | `/admin/events/{id}/status` | 開放／關閉 |
+| POST | `/admin/events/{id}/rotate-token` | 重新產生連結 |
+| POST | `/admin/events/{id}/duplicate` | 複製活動 |
+| GET | `/admin/events/{id}/registrations` | 名單與管理 |
+| POST | `/admin/events/{id}/registrations/new` | 代為新增 |
+| POST | `/admin/events/{id}/registrations/{rid}` | 代為修改 |
+| POST | `/admin/events/{id}/registrations/{rid}/delete` | 刪除 |
+| GET | `/admin/events/{id}/export.csv` | 匯出 CSV |
+| GET | `/admin/events/{id}/export.json` | 匯出 JSON |
+
+### 8.5 其他路由
+
+| 方法 | 路徑 | 功能 |
+| --- | --- | --- |
+| GET | `/` | 說明頁（無公開活動目錄），提供管理員登入入口 |
+| GET | `/e/{token}` | 活動報名頁（未驗證時顯示數學題） |
+| POST | `/e/{token}/verify` | 送出數學題答案 |
+| POST | `/e/{token}/register` | 送出報名 |
+| POST | `/e/{token}/register/confirm` | 確認覆蓋 |
+| GET | `/e/{token}/registrations` | 名單與統計 |
+| GET | `/healthz` | 健康檢查（檢查 DB 可讀） |
+
+---
+
+## 9. 驗證與錯誤處理
+
+| 情境 | 行為 |
+| --- | --- |
+| 數學題答錯 | 顯示「答案不正確，請再試一次」，重新出題 |
+| 姓名空白／過長 | 表單錯誤訊息，保留其他輸入 |
+| 必填群組未選 | 表單錯誤訊息，指出缺少的群組 |
+| 所選選項不屬於活動／已停用 | 視為無效，要求重新選擇 |
+| 活動未開放或已截止 | 403 頁面「本活動尚未開放」／「本活動已截止報名」 |
+| 活動 token 不存在 | 404 頁面 |
+| 同名報名 | 覆蓋確認頁 |
+| 管理員密碼錯誤 | 「密碼錯誤」，不透露其他資訊 |
+| 限速觸發 | 429 頁面「請求過於頻繁，請稍後再試」 |
+| 未登入存取管理頁 | 導向 `/admin/login` |
+
+所有錯誤頁皆提供返回合適頁面的連結。表單錯誤以同一頁重繪並保留已填內容（密碼除外）。
+
+---
+
+## 10. 統計規則
+
+名單頁與管理員名單頁顯示：
+
+- 總報名筆數
+- 出席人數、不出席人數
+- 出席率＝出席人數 ÷ 總報名筆數，四捨五入至整數百分比；總數為 0 時顯示「—」
+- 每個群組：
+  - 各啟用選項的人數與佔該群組比例（分母＝該群組有作答的報名人數）
+  - 已停用但有歷史選擇的選項，以「（已停用）」標示並列入統計
+  - 選填群組另有「未選」人數
+
+統計即時由資料庫計算，不快取。
+
+---
+
+## 11. 時間與格式
+
+- 資料庫儲存 UTC ISO 8601（含時區）。
+- 顯示一律轉為 `Asia/Taipei`，格式 `YYYY-MM-DD HH:MM`。
+- 截止判斷以伺服器端 UTC 時間為準；到達截止時間即拒絕送出，不依賴前端倒數。
+- 匯出檔時間欄位使用 `Asia/Taipei` 格式。
+
+---
+
+## 12. 安全
+
+- 所有 POST 表單含 CSRF token（session 綁定），驗證失敗回 400。
+- Session cookie：`HttpOnly`、`SameSite=Lax`、偵測到 HTTPS 時加 `Secure`；簽章金鑰來自 `SESSION_SECRET`。
+- `ADMIN_PASSWORD`、`SESSION_SECRET` 僅由 `.env` 提供；提供 `.env.example`，`.env` 列入 `.gitignore`。
+- 限速（以記憶體計數器實作，單一程序即可）：
+  - 管理員登入：每 IP 每分鐘 5 次
+  - 報名送出（含覆蓋確認）：每 IP 每分鐘 20 次
+  - 數學題送出：每 IP 每分鐘 20 次
+- 所有輸出經模板跳脫；說明與備註僅支援純文字，不解析 HTML／Markdown。
+- 公開連結 token 以 `secrets` 模組產生，10 碼 base32（去除 0/O/1/I）。
+- 不記錄 IP 於資料庫；應用日誌僅記錄方法、路徑、狀態碼與耗時。
+
+---
+
+## 13. 部署與運維（VPS）
+
+### 13.1 容器組成
+
+`docker compose up -d` 啟動：
+
+1. `app`：FastAPI／uvicorn，監聽 8000
+   - 非 root 使用者執行
+   - `restart: unless-stopped`
+   - healthcheck 打 `/healthz`
+   - 記憶體上限 256MB
+   - 日誌輪替：`json-file`，單檔 10MB、保留 3 份
+2. `caddy`：反向代理 `app:8000`，對外 80/443，自動申請與續約 Let's Encrypt 憑證
+   - 網域由 `.env` 的 `DOMAIN` 指定
+
+掛載：
+
+- `./data` → SQLite 資料庫（必須持久化）
+- `./backups` → 備份輸出
+- `caddy_data`、`caddy_config` → 具名 volume，保存憑證
+
+### 13.2 已有反向代理的 VPS
+
+提供 `docker-compose.proxy.yml` 覆寫檔：
+
+- 不啟動 Caddy（或改用 profile 關閉）
+- `app` 只綁定 `127.0.0.1:${APP_PORT}`，由既有 nginx/Caddy 轉發
+- 文件說明需轉發的 header（`Host`、`X-Forwarded-For`、`X-Forwarded-Proto`）
+
+### 13.3 更新流程
+
+`deploy.sh`：
+
+1. 記錄目前 image tag（以 git commit short SHA 標記）
+2. `git pull`
+3. `docker compose build`
+4. `docker compose up -d`
+5. 輪詢 `/healthz` 至成功（上限 60 秒）
+6. 失敗則以先前 image tag 重新 `up -d` 並輸出錯誤
+
+v1 不使用 CI/CD、不使用外部 image registry，於 VPS 本機 build。
+
+### 13.4 備份與還原
+
+- `scripts/backup.sh` 由 VPS cron 每日執行（例如 03:30）：
+  - `sqlite3 data/app.db ".backup backups/app-YYYYMMDD-HHMM.db"`
+  - 另以 `sqlite3 -csv` 匯出各活動名單為 CSV
+  - 刪除 30 天前的備份檔
+- 還原步驟（文件化）：停止 `app` → 以備份檔覆蓋 `data/app.db` → 啟動 `app` → 驗證 `/healthz` 與名單。
+- 異地備份不在範圍內，文件註明可自行 rsync／rclone。
+
+### 13.5 環境變數
+
+| 變數 | 必填 | 說明 |
+| --- | --- | --- |
+| `ADMIN_PASSWORD` | 是 | 管理員密碼 |
+| `SESSION_SECRET` | 是 | cookie 簽章金鑰（隨機長字串） |
+| `DOMAIN` | 使用 Caddy 時必填 | 網站網域 |
+| `APP_PORT` | 否 | 使用既有代理時的綁定埠，預設 8000 |
+| `TZ` | 否 | 預設 `Asia/Taipei` |
+
+---
+
+## 14. 測試與驗收
+
+### 14.1 pytest 整合測試（必備）
+
+- 數學題：正確答案通過、錯誤答案重出題、未驗證不可送出報名
+- 報名：必填群組缺漏被拒、選填群組可留空、備註長度限制
+- 不出席：自訂群組資料不寫入；切回出席可正常送出
+- 同名覆蓋：確認頁出現、覆蓋後僅一筆、`created_at` 保留
+- 姓名正規化：全形／半形空白、大小寫、NFKC 等視為同名
+- 狀態：draft 不可報名、closed 拒絕送出、截止時間到達後拒絕、重開後可報名
+- 管理員：登入成功／失敗、未登入導向、匯出 CSV 欄位與 BOM、刪除與代改、token 重新產生後舊連結 404
+- 停用選項：不出現在表單、歷史報名與統計仍顯示
+
+### 14.2 Smoke 測試
+
+`scripts/smoke.sh`：於 compose 啟動後驗證 `/healthz` 回 200、首頁可讀、不存在的活動 token 回 404。
+
+### 14.3 驗收條件
+
+1. `docker compose up -d` 後可透過網域以 HTTPS 開啟活動頁。
+2. 參與者可在手機上完成「驗證 → 填表 → 送出 → 看名單」全程。
+3. 同名再次送出會出現覆蓋確認，覆蓋後名單僅一筆且統計正確。
+4. 截止後任何人都無法送出，名單仍可瀏覽。
+5. 管理員可建立活動、編輯選項、查看名單、匯出 CSV／JSON。
+6. `deploy.sh` 可在不清除資料的情況下完成更新，健康檢查失敗時可回滾。
+7. 備份腳本可產出可還原的資料庫快照。
+
+---
+
+## 15. 實作狀態
+
+規格已定案。**尚未開始實作**；待使用者明確指示「開始」後，才進入開發。

@@ -1,0 +1,16 @@
+# 11: VPS 部署、TLS、備份與 smoke
+
+**What to build:** 維運者能在 VPS 上以 HTTPS 上線、安全更新與回滾，並每天自動備份；若機器上已有反向代理，也能只綁本機埠與其他網站共存。
+
+**Blocked by:** 04（報名、同名覆蓋、預填與基本名單）
+
+**Status:** ready-for-agent
+
+- [ ] 預設 compose 啟動 app 與 Caddy；設定網域後以 HTTPS 提供服務並自動續約憑證
+- [ ] 提供覆寫檔：不啟動 Caddy，app 只綁 `127.0.0.1:APP_PORT`；文件說明必要的轉發 header
+- [ ] 部署腳本依序執行 pull、build、up、健康檢查；健康檢查 60 秒內失敗時回滾上一版 image
+- [ ] 備份腳本每日產生 SQLite 線上快照與 CSV，保留 30 天並清除更舊檔案；文件含還原步驟
+- [ ] smoke 腳本驗證 `/healthz` 回 200、首頁可讀、無效活動 token 回 404
+- [ ] 提供環境變數範例（管理員密碼、session 金鑰、網域、連接埠、時區）與維運 README
+- [ ] 真實 `.env` 不出現在版控
+- [ ] 文件說明管理員密碼輪替方式
