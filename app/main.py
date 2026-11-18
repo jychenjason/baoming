@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import db, events
+from app import db, events, registrations
 from app.config import Settings
 from app.logging import configure_logging
 from app.middleware import install_request_logging
@@ -32,7 +32,9 @@ BASE_DIR = Path(__file__).resolve().parent
 logger = configure_logging()
 
 MATH_GATE_LIMIT = 20
+REGISTRATION_LIMIT = 20
 MATH_GATE_SESSION_PREFIX = "math_gate:"
+REGISTRATION_SESSION_PREFIX = "registration:"
 
 def _form_text(value) -> str:
     return value if isinstance(value, str) else ""
@@ -97,6 +99,7 @@ def create_app(
     app.state.math_problem_factory = math_problem_factory
     app.state.login_limiter = FailureLimiter(LOGIN_FAILURE_LIMIT)
     app.state.math_gate_limiter = FailureLimiter(MATH_GATE_LIMIT)
+    app.state.registration_limiter = FailureLimiter(REGISTRATION_LIMIT)
 
     try:
         db.init_db(settings.db_path)
@@ -243,10 +246,159 @@ def create_app(
                     "error": None,
                 },
             )
+        registration_id = request.session.get(REGISTRATION_SESSION_PREFIX + token)
+        saved = (
+            registrations.registration_for_id(settings.db_path, event["id"], registration_id)
+            if isinstance(registration_id, int) and not isinstance(registration_id, bool)
+            else None
+        )
+        values = {
+            "name": saved["name"] if saved else "",
+            "attendance": saved["attendance"] if saved else "",
+            "note": saved["note"] if saved and saved["note"] else "",
+        }
         return templates.TemplateResponse(
             request,
             "event_public.html",
-            {"event": events.present_event(event, settings.timezone)},
+            {
+                "event": events.present_event(event, settings.timezone),
+                "values": values,
+                "errors": {},
+                "message": None,
+            },
+        )
+
+    def participant_values(form) -> dict[str, str]:
+        return {
+            "name": _form_text(form.get("name")),
+            "attendance": _form_text(form.get("attendance")),
+            "note": _form_text(form.get("note")),
+        }
+
+    def render_public_form(request, event, values, errors, message=None, status_code=200):
+        return templates.TemplateResponse(
+            request,
+            "event_public.html",
+            {
+                "event": events.present_event(event, settings.timezone),
+                "values": values,
+                "errors": errors,
+                "message": message,
+            },
+            status_code=status_code,
+        )
+
+    def registration_id_for(request: Request, token: str):
+        value = request.session.get(REGISTRATION_SESSION_PREFIX + token)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @app.post("/e/{token}/register", response_class=HTMLResponse)
+    async def public_register(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+        form = await csrf_protected_form(request)
+        limiter: FailureLimiter = request.app.state.registration_limiter
+        ip = client_ip(request)
+        if limiter.is_blocked(ip):
+            return templates.TemplateResponse(
+                request, "error.html",
+                {"status_code": 429, "message": "請求過於頻繁，請稍後再試。"},
+                status_code=429,
+            )
+        limiter.record_failure(ip)
+        raw = participant_values(form)
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_public_form(request, event, raw, errors)
+        outcome, registration_id, existing = registrations.save_registration(
+            settings.db_path,
+            event["id"],
+            data,
+            app.state.clock(),
+            authorized_registration_id=registration_id_for(request, token),
+        )
+        if outcome == "created":
+            request.session[REGISTRATION_SESSION_PREFIX + token] = registration_id
+            return RedirectResponse(f"/e/{token}/registrations", status_code=303)
+        if outcome == "conflict" and registration_id is not None and existing is not None:
+            return templates.TemplateResponse(
+                request,
+                "registration_confirm.html",
+                {
+                    "event": events.present_event(event, settings.timezone),
+                    "values": raw,
+                    "existing": existing,
+                },
+            )
+        if outcome == "conflict":
+            return render_public_form(
+                request, event, raw, {},
+                "此姓名已有報名，請確認姓名是否正確，或聯絡管理員。",
+            )
+        return render_public_form(
+            request, event, raw, {},
+            "本活動尚未開放或已截止報名。", status_code=403,
+        )
+
+    @app.post("/e/{token}/register/confirm", response_class=HTMLResponse)
+    async def public_register_confirm(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+        form = await csrf_protected_form(request)
+        limiter: FailureLimiter = request.app.state.registration_limiter
+        ip = client_ip(request)
+        if limiter.is_blocked(ip):
+            return templates.TemplateResponse(
+                request, "error.html",
+                {"status_code": 429, "message": "請求過於頻繁，請稍後再試。"},
+                status_code=429,
+            )
+        limiter.record_failure(ip)
+        raw = participant_values(form)
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_public_form(request, event, raw, errors)
+        outcome, registration_id, _ = registrations.save_registration(
+            settings.db_path,
+            event["id"],
+            data,
+            app.state.clock(),
+            authorized_registration_id=registration_id_for(request, token),
+            confirm_overwrite=True,
+        )
+        if outcome == "updated":
+            request.session[REGISTRATION_SESSION_PREFIX + token] = registration_id
+            return RedirectResponse(f"/e/{token}/registrations", status_code=303)
+        if outcome == "conflict":
+            return render_public_form(
+                request, event, raw, {},
+                "此姓名已有報名，請確認姓名是否正確，或聯絡管理員。",
+            )
+        return render_public_form(
+            request, event, raw, {},
+            "本活動尚未開放或已截止報名。", status_code=403,
+        )
+
+    @app.get("/e/{token}/registrations", response_class=HTMLResponse)
+    def public_registrations(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+        data = registrations.roster(
+            settings.db_path, event["id"], settings.timezone
+        )
+        return templates.TemplateResponse(
+            request,
+            "event_registrations.html",
+            {"event": events.present_event(event, settings.timezone), **data},
         )
 
     @app.post("/e/{token}/verify", response_class=HTMLResponse)

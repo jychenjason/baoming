@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}已報名資料｜{{ event.title }}{% endblock %}
+{% block head_extra %}<meta http-equiv="refresh" content="30">{% endblock %}
+
+{% block content %}
+<h1>{{ event.title }}｜已報名資料</h1>
+<p class="notice">通過活動連結驗證的人都能查看姓名、出席狀態、備註與最後更新時間。請勿在備註填寫敏感資訊。</p>
+<section class="stats" aria-label="報名統計">
+  <p>總報名：{{ total }}</p>
+  <p>出席：{{ attending }}</p>
+  <p>不出席：{{ not_attending }}</p>
+</section>
+{% if registrations %}
+<div class="roster">
+  {% for registration in registrations %}
+  <article class="card roster-card">
+    <h2>{{ registration.name }}</h2>
+    <p>出席狀態：{{ '出席' if registration.attendance == 'attending' else '不出席' }}</p>
+    {% if registration.note %}<p>備註：{{ registration.note }}</p>{% endif %}
+    <p class="muted">最後更新：{{ registration.updated_label }}</p>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<p>目前尚無報名資料。</p>
+{% endif %}
+<p><a class="button" href="/e/{{ request.path_params.token }}">回報名頁</a></p>
+{% endblock %}
