@@ -259,6 +259,123 @@ def create_app(
             status_code=status_code,
         )
 
+    def render_admin_roster(request: Request, event_id: int, *, message=None,
+                            values=None, errors=None, edit_registration=None,
+                            delete_registration=None, status_code=200):
+        event = events.get_event_detail(settings.db_path, event_id, settings.timezone,
+                                        app.state.clock())
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        roster_data = registrations.roster(settings.db_path, event_id, settings.timezone)
+        groups = registrations.custom_groups(settings.db_path, event_id)
+        if edit_registration is not None:
+            detail = registrations.registration_for_id(
+                settings.db_path, event_id, edit_registration)
+            if detail is not None:
+                for group in groups:
+                    selected = detail["choices"].get(f"group_{group['id']}")
+                    if selected and all(str(option["id"]) != selected
+                                         for option in group["options"]):
+                        with db.open_db(settings.db_path) as conn:
+                            historical = conn.execute(
+                                "SELECT id, label FROM options WHERE id = ? AND group_id = ?",
+                                (int(selected), group["id"]),
+                            ).fetchone()
+                        if historical:
+                            group["options"].append({**dict(historical), "disabled": True})
+        admin_rows = []
+        for row in roster_data["registrations"]:
+            detail = registrations.registration_for_id(
+                settings.db_path, event_id, int(row["id"]))
+            admin_rows.append({**row, "form_values": {
+                "name": detail["name"], "attendance": detail["attendance"],
+                "note": detail["note"] or "", **detail["choices"]}})
+        return templates.TemplateResponse(
+            request, "admin_registrations.html",
+            {"event": event, **roster_data,
+             "groups": groups,
+             "admin_rows": admin_rows,
+             "message": message, "values": values or {}, "errors": errors or {},
+             "edit_registration": edit_registration,
+             "delete_registration": delete_registration},
+            status_code=status_code,
+        )
+
+    @app.get("/admin/events/{event_id}/registrations", response_class=HTMLResponse)
+    def admin_registration_list(request: Request, event_id: int):
+        return render_admin_roster(request, event_id)
+
+    @app.get("/admin/events/{event_id}/registrations/{registration_id}/edit",
+             response_class=HTMLResponse)
+    def admin_registration_edit_page(request: Request, event_id: int, registration_id: int):
+        detail = registrations.registration_for_id(settings.db_path, event_id, registration_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        values = {"name": detail["name"], "attendance": detail["attendance"],
+                  "note": detail["note"] or "", **detail["choices"]}
+        return render_admin_roster(request, event_id, edit_registration=registration_id,
+                                   values=values)
+
+    @app.post("/admin/events/{event_id}/registrations")
+    async def admin_registration_create(request: Request, event_id: int):
+        form = await csrf_protected_form(request)
+        raw = {key: _form_text(value) for key, value in form.items()
+               if key != "csrf_token"}
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=errors)
+        outcome, _, _, choice_errors = registrations.save_registration(
+            settings.db_path, event_id, data, app.state.clock(), administrator=True)
+        if outcome == "created":
+            return RedirectResponse(f"/admin/events/{event_id}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=choice_errors)
+        message = ("此姓名已有報名，請編輯既有資料。" if outcome == "conflict"
+                   else "活動目前未開放報名，無法新增代報名。")
+        return render_admin_roster(request, event_id, message=message, values=raw)
+
+    @app.post("/admin/events/{event_id}/registrations/{registration_id}/edit")
+    async def admin_registration_edit(request: Request, event_id: int, registration_id: int):
+        form = await csrf_protected_form(request)
+        raw = {key: _form_text(value) for key, value in form.items()
+               if key != "csrf_token"}
+        existing = registrations.registration_for_id(settings.db_path, event_id, registration_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=errors,
+                                       edit_registration=registration_id)
+        outcome, _, _, choice_errors = registrations.save_registration(
+            settings.db_path, event_id, data, app.state.clock(),
+            authorized_registration_id=registration_id, confirm_overwrite=True,
+            administrator=True)
+        if outcome == "updated":
+            return RedirectResponse(f"/admin/events/{event_id}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=choice_errors,
+                                       edit_registration=registration_id)
+        message = ("姓名與另一筆報名重複，請修改姓名。" if outcome == "conflict"
+                   else "無法更新報名資料，請重新整理後再試。")
+        return render_admin_roster(request, event_id, message=message, values=raw,
+                                   edit_registration=registration_id)
+
+    @app.post("/admin/events/{event_id}/registrations/{registration_id}/delete")
+    async def admin_registration_delete(request: Request, event_id: int, registration_id: int):
+        form = await csrf_protected_form(request)
+        existing = registrations.registration_for_id(settings.db_path, event_id, registration_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        if form.get("confirm") != "1":
+            return render_admin_roster(request, event_id, delete_registration=existing)
+        if not registrations.delete_registration(settings.db_path, event_id, registration_id):
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        return RedirectResponse(f"/admin/events/{event_id}/registrations", status_code=303)
+
     @app.post("/admin/events/{event_id}/groups")
     async def admin_group_create(request: Request, event_id: int):
         form = await csrf_protected_form(request)

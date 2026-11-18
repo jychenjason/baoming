@@ -105,6 +105,15 @@ def registration_for_id(db_path: str, event_id: int, registration_id: int) -> di
     }
 
 
+def delete_registration(db_path: str, event_id: int, registration_id: int) -> bool:
+    with db.open_db(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM registrations WHERE id = ? AND event_id = ?",
+            (registration_id, event_id),
+        )
+        return cursor.rowcount == 1
+
+
 def save_registration(
     db_path: str,
     event_id: int,
@@ -113,6 +122,7 @@ def save_registration(
     *,
     authorized_registration_id: int | None = None,
     confirm_overwrite: bool = False,
+    administrator: bool = False,
 ) -> tuple[RegistrationOutcome | Literal["invalid"], int | None, dict | None, dict[str, str]]:
     """Serialize name check and write so simultaneous duplicate creates cannot overwrite."""
     stamp = utc_stamp(now)
@@ -123,15 +133,15 @@ def save_registration(
                 "SELECT status, registration_deadline_at FROM events WHERE id = ?",
                 (event_id,),
             ).fetchone()
-            if event is None or event["status"] != "open":
+            if event is None:
                 conn.rollback()
                 return "unavailable", None, None, {}
-            if event["registration_deadline_at"]:
+            available = event["status"] == "open"
+            if available and event["registration_deadline_at"]:
                 deadline = datetime.fromisoformat(event["registration_deadline_at"])
                 checked_now = now if now.tzinfo else now.replace(tzinfo=deadline.tzinfo)
                 if checked_now >= deadline:
-                    conn.rollback()
-                    return "unavailable", None, None, {}
+                    available = False
 
             groups = conn.execute(
                 "SELECT id, title, required FROM option_groups WHERE event_id = ? AND kind = 'custom' ORDER BY sort_order, id",
@@ -157,8 +167,10 @@ def save_registration(
                         choice_errors[key] = f"「{group['title']}」的選項無效，請重新選擇。"
                         continue
                     option = conn.execute(
-                        "SELECT label FROM options WHERE id = ? AND group_id = ? AND is_active = 1",
-                        (option_id, group["id"]),
+                        "SELECT label FROM options WHERE id = ? AND group_id = ? AND "
+                        "(is_active = 1 OR (? = 1 AND id IN "
+                        "(SELECT option_id FROM registration_choices WHERE registration_id = ?)))",
+                        (option_id, group["id"], int(administrator), authorized_registration_id or -1),
                     ).fetchone()
                     if option is None:
                         choice_errors[key] = f"「{group['title']}」的選項已失效，請重新選擇。"
@@ -189,6 +201,9 @@ def save_registration(
                 if authorized is None or int(authorized["id"]) != rid:
                     conn.rollback()
                     return "conflict", None, None, {}
+                if not available and not administrator:
+                    conn.rollback()
+                    return "unavailable", None, None, {}
                 if not confirm_overwrite:
                     conn.rollback()
                     return "conflict", rid, dict(target), {}
@@ -206,6 +221,10 @@ def save_registration(
                     "SELECT * FROM registrations WHERE id = ?", (rid,)
                 ).fetchone()
                 return "updated", rid, dict(updated), {}
+
+            if not available:
+                conn.rollback()
+                return "unavailable", None, None, {}
 
             cursor = conn.execute(
                 "INSERT INTO registrations (event_id, name, name_normalized, attendance, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -256,6 +275,7 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
     registrations = [
         {
             **dict(row),
+            "created_label": format_local_datetime(row["created_at"], timezone_name),
             "updated_label": format_local_datetime(row["updated_at"], timezone_name),
             "choices": [
                 {
