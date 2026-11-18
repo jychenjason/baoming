@@ -17,6 +17,7 @@
   <article class="card roster-card">
     <h2>{{ registration.name }}</h2>
     <p>出席狀態：{{ '出席' if registration.attendance == 'attending' else '不出席' }}</p>
+    {% for choice in registration.choices %}<p>{{ choice.group_title }}：{{ choice.option_label }}{% if choice.disabled %}（已停用）{% endif %}</p>{% endfor %}
     {% if registration.note %}<p>備註：{{ registration.note }}</p>{% endif %}
     <p class="muted">最後更新：{{ registration.updated_label }}</p>
   </article>

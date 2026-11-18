@@ -358,6 +358,7 @@ def create_app(
             "name": saved["name"] if saved else "",
             "attendance": saved["attendance"] if saved else "",
             "note": saved["note"] if saved and saved["note"] else "",
+            **(saved.get("choices", {}) if saved else {}),
         }
         return templates.TemplateResponse(
             request,
@@ -365,17 +366,20 @@ def create_app(
             {
                 "event": events.present_event(event, settings.timezone),
                 "values": values,
+                "groups": registrations.custom_groups(settings.db_path, event["id"]),
                 "errors": {},
                 "message": None,
             },
         )
 
     def participant_values(form) -> dict[str, str]:
-        return {
+        values = {
             "name": _form_text(form.get("name")),
             "attendance": _form_text(form.get("attendance")),
             "note": _form_text(form.get("note")),
         }
+        values.update({key: _form_text(value) for key, value in form.items() if key.startswith("group_")})
+        return values
 
     def render_public_form(request, event, values, errors, message=None, status_code=200):
         return templates.TemplateResponse(
@@ -384,6 +388,7 @@ def create_app(
             {
                 "event": events.present_event(event, settings.timezone),
                 "values": values,
+                "groups": registrations.custom_groups(settings.db_path, event["id"]),
                 "errors": errors,
                 "message": message,
             },
@@ -415,7 +420,7 @@ def create_app(
         data, errors = registrations.validate_form(raw)
         if errors:
             return render_public_form(request, event, raw, errors)
-        outcome, registration_id, existing = registrations.save_registration(
+        outcome, registration_id, existing, choice_errors = registrations.save_registration(
             settings.db_path,
             event["id"],
             data,
@@ -425,6 +430,8 @@ def create_app(
         if outcome == "created":
             request.session[REGISTRATION_SESSION_PREFIX + token] = registration_id
             return RedirectResponse(f"/e/{token}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_public_form(request, event, raw, choice_errors)
         if outcome == "conflict" and registration_id is not None and existing is not None:
             return templates.TemplateResponse(
                 request,
@@ -432,6 +439,7 @@ def create_app(
                 {
                     "event": events.present_event(event, settings.timezone),
                     "values": raw,
+                    "groups": registrations.custom_groups(settings.db_path, event["id"]),
                     "existing": existing,
                 },
             )
@@ -466,7 +474,7 @@ def create_app(
         data, errors = registrations.validate_form(raw)
         if errors:
             return render_public_form(request, event, raw, errors)
-        outcome, registration_id, _ = registrations.save_registration(
+        outcome, registration_id, _, choice_errors = registrations.save_registration(
             settings.db_path,
             event["id"],
             data,
@@ -477,6 +485,8 @@ def create_app(
         if outcome == "updated":
             request.session[REGISTRATION_SESSION_PREFIX + token] = registration_id
             return RedirectResponse(f"/e/{token}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_public_form(request, event, raw, choice_errors)
         if outcome == "conflict":
             return render_public_form(
                 request, event, raw, {},

@@ -47,12 +47,50 @@
       <label><input type="radio" name="attendance" value="not_attending" required {% if values.get('attendance') == 'not_attending' %}checked{% endif %}> 不出席</label>
       {% if errors.get('attendance') %}<p class="field-error" role="alert">{{ errors.get('attendance') }}</p>{% endif %}
     </fieldset>
+    <div id="custom-groups" {% if values.get('attendance') == 'not_attending' %}hidden{% endif %}>
+      {% for group in groups %}
+      <fieldset class="custom-group" data-custom-group>
+        <legend>{{ group.title }}{% if group.required %}（必填）{% else %}（選填）{% endif %}</legend>
+        {% if not group.required %}
+        <label><input type="radio" name="group_{{ group.id }}" value="" {% if not values.get('group_' ~ group.id) %}checked{% endif %}> 不選</label>
+        {% endif %}
+        {% for option in group.options %}
+        <label><input type="radio" name="group_{{ group.id }}" value="{{ option.id }}" {% if values.get('group_' ~ group.id) == option.id|string %}checked{% endif %}> {{ option.label }}</label>
+        {% endfor %}
+        {% if errors.get('group_' ~ group.id) %}<p class="field-error" role="alert">{{ errors.get('group_' ~ group.id) }}</p>{% endif %}
+      </fieldset>
+      {% endfor %}
+      {% if errors.get('choices') %}<p class="field-error" role="alert">{{ errors.get('choices') }}</p>{% endif %}
+    </div>
     <label for="note">備註（選填，最多 100 字）</label>
     <textarea id="note" name="note" maxlength="100" rows="3">{{ values.get('note', '') }}</textarea>
     {% if errors.get('note') %}<p class="field-error" role="alert">{{ errors.get('note') }}</p>{% endif %}
     <button class="button primary" type="submit">送出報名</button>
   </form>
 </section>
+<script>
+(() => {
+  const choices = document.getElementById('custom-groups');
+  const attendance = document.querySelectorAll('input[name="attendance"]');
+  if (!choices || !attendance.length) return;
+  const update = () => {
+    const notAttending = document.querySelector('input[name="attendance"]:checked')?.value === 'not_attending';
+    choices.hidden = notAttending;
+    choices.querySelectorAll('input').forEach((input) => {
+      input.disabled = notAttending;
+      if (notAttending) input.checked = false;
+    });
+    if (!notAttending) {
+      choices.querySelectorAll('fieldset').forEach((group) => {
+        const noChoice = group.querySelector('input[value=""]');
+        if (noChoice && !group.querySelector('input:checked')) noChoice.checked = true;
+      });
+    }
+  };
+  attendance.forEach((input) => input.addEventListener('change', update));
+  update();
+})();
+</script>
 {% elif message %}
 <p class="error" role="alert">{{ message }}</p>
 {% endif %}

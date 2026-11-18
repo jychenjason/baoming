@@ -15,6 +15,7 @@
   <h2>修改後資料</h2>
   <p>姓名：{{ values.name }}</p>
   <p>出席狀態：{{ '出席' if values.attendance == 'attending' else '不出席' }}</p>
+  {% for group in groups %}{% set selected = values.get("group_" ~ group.id, "") %}{% if selected %}{% for option in group.options %}{% if option.id|string == selected %}<p>{{ group.title }}：{{ option.label }}</p>{% endif %}{% endfor %}{% endif %}{% endfor %}
   {% if values.note %}<p>備註：{{ values.note }}</p>{% endif %}
 </section>
 <form method="post" action="/e/{{ request.path_params.token }}/register/confirm" class="form">
@@ -22,6 +23,7 @@
   <input type="hidden" name="name" value="{{ values.name }}">
   <input type="hidden" name="attendance" value="{{ values.attendance }}">
   <input type="hidden" name="note" value="{{ values.note }}">
+  {% for group in groups %}{% set selected = values.get("group_" ~ group.id, "") %}{% if selected %}<input type="hidden" name="group_{{ group.id }}" value="{{ selected }}">{% endif %}{% endfor %}
   <button class="button primary" type="submit">確認覆蓋</button>
   <a class="button" href="/e/{{ request.path_params.token }}">返回修改</a>
 </form>
