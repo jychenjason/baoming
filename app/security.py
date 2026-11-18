@@ -34,6 +34,14 @@ def verify_csrf(request: Request, submitted: str | None) -> None:
         )
 
 
+async def csrf_protected_form(request: Request):
+    """Read a form body and reject it unless it carries this session's token."""
+    form = await request.form()
+    token = form.get("csrf_token")
+    verify_csrf(request, token if isinstance(token, str) else None)
+    return form
+
+
 def password_matches(submitted: str, expected: str) -> bool:
     return hmac.compare_digest(submitted.encode("utf-8"), expected.encode("utf-8"))
 

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from tests.support import ADMIN_PASSWORD
 
 
 @pytest.fixture
@@ -10,7 +11,7 @@ def make_settings(tmp_path):
     def build(**overrides):
         values = {
             "db_path": str(tmp_path / "app.db"),
-            "admin_password": "admin-test-password",
+            "admin_password": ADMIN_PASSWORD,
             "session_secret": "test-session-secret",
         }
         values.update(overrides)

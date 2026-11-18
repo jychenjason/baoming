@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,29 +18,19 @@ from app.middleware import install_request_logging
 from app.ratelimit import LOGIN_FAILURE_LIMIT, FailureLimiter
 from app.security import (
     client_ip,
+    csrf_protected_form,
     csrf_token,
     install_admin_guard,
     password_matches,
     sign_in_admin,
     sign_out_admin,
-    verify_csrf,
 )
 from app.session import SessionMiddleware
-from app.timeutil import format_local_datetime
 
 BASE_DIR = Path(__file__).resolve().parent
 logger = configure_logging()
 
-EVENT_FORM_FIELDS = (
-    "title",
-    "description",
-    "location",
-    "starts_at",
-    "registration_deadline_at",
-)
-
-
-def _text(value) -> str:
+def _form_text(value) -> str:
     return value if isinstance(value, str) else ""
 
 
@@ -87,8 +79,7 @@ def create_app(
 
     @app.post("/admin/login")
     async def admin_login(request: Request):
-        form = await request.form()
-        verify_csrf(request, form.get("csrf_token"))
+        form = await csrf_protected_form(request)
 
         limiter: FailureLimiter = request.app.state.login_limiter
         ip = client_ip(request)
@@ -117,8 +108,7 @@ def create_app(
 
     @app.post("/admin/logout")
     async def admin_logout(request: Request):
-        form = await request.form()
-        verify_csrf(request, form.get("csrf_token"))
+        await csrf_protected_form(request)
         sign_out_admin(request)
         return RedirectResponse("/admin/login", status_code=303)
 
@@ -146,9 +136,8 @@ def create_app(
 
     @app.post("/admin/events/new")
     async def admin_event_create(request: Request):
-        form = await request.form()
-        verify_csrf(request, _text(form.get("csrf_token")))
-        raw = {name: _text(form.get(name)) for name in EVENT_FORM_FIELDS}
+        form = await csrf_protected_form(request)
+        raw = {name: _form_text(form.get(name)) for name in events.FORM_FIELDS}
         data, errors = events.validate_event_form(raw, settings.timezone)
         if errors:
             return templates.TemplateResponse(
@@ -174,8 +163,7 @@ def create_app(
 
     @app.post("/admin/events/{event_id}/rotate-token")
     async def admin_event_rotate_token(request: Request, event_id: int):
-        form = await request.form()
-        verify_csrf(request, _text(form.get("csrf_token")))
+        await csrf_protected_form(request)
         token = events.rotate_token(settings.db_path, event_id, app.state.clock())
         if token is None:
             raise HTTPException(status_code=404, detail="找不到活動。")
@@ -186,17 +174,10 @@ def create_app(
         event = events.get_event_by_token(settings.db_path, token)
         if event is None:
             raise HTTPException(status_code=404, detail="找不到活動。")
-        event["status_label"] = events.STATUS_LABELS.get(
-            event["status"], event["status"]
-        )
-        event["starts_label"] = format_local_datetime(
-            event["starts_at"], settings.timezone
-        )
-        event["deadline_label"] = format_local_datetime(
-            event["registration_deadline_at"], settings.timezone
-        )
         return templates.TemplateResponse(
-            request, "event_public.html", {"event": event}
+            request,
+            "event_public.html",
+            {"event": events.present_event(event, settings.timezone)},
         )
 
     @app.get("/healthz")
@@ -212,7 +193,13 @@ def create_app(
     install_admin_guard(app)
     app.add_middleware(
         SessionMiddleware,
-        secret_key=settings.session_secret,
+        # Bind signed cookies to the current admin password so rotating the
+        # password immediately invalidates existing stateless sessions.
+        secret_key=hmac.new(
+            settings.session_secret.encode("utf-8"),
+            settings.admin_password.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest(),
         always_secure=settings.cookie_secure,
     )
     install_request_logging(app, logger)

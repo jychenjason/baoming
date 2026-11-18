@@ -5,12 +5,12 @@ from __future__ import annotations
 import secrets
 import sqlite3
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, fields
+from datetime import datetime
 from typing import Any
 
 from app import db
-from app.timeutil import format_local_datetime, parse_local_datetime
+from app.timeutil import format_local_datetime, parse_local_datetime, utc_stamp
 
 TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ234567"
 TOKEN_LENGTH = 10
@@ -34,6 +34,9 @@ class EventInput:
     location: str | None
     starts_at: str | None
     registration_deadline_at: str | None
+
+
+FORM_FIELDS = tuple(field.name for field in fields(EventInput))
 
 
 def validate_event_form(
@@ -100,7 +103,7 @@ def _unique_token(conn: sqlite3.Connection) -> str:
 def create_event(
     db_path: str, data: EventInput, now: datetime
 ) -> int:
-    stamp = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+    stamp = utc_stamp(now)
     with db.open_db(db_path) as conn:
         with conn:
             token = _unique_token(conn)
@@ -145,6 +148,19 @@ def create_event(
     return event_id
 
 
+def present_event(
+    row: Mapping[str, Any], timezone_name: str
+) -> dict[str, Any]:
+    """Attach the labels every admin/public view renders for an event."""
+    event = dict(row)
+    event["status_label"] = STATUS_LABELS.get(event["status"], event["status"])
+    event["starts_label"] = format_local_datetime(event["starts_at"], timezone_name)
+    event["deadline_label"] = format_local_datetime(
+        event["registration_deadline_at"], timezone_name
+    )
+    return event
+
+
 def list_events(
     db_path: str, *, base_url: str = "", timezone_name: str = "Asia/Taipei"
 ) -> list[dict[str, Any]]:
@@ -161,21 +177,11 @@ def list_events(
 
     return [
         {
-            **dict(row),
-            "status_label": STATUS_LABELS.get(row["status"], row["status"]),
-            "deadline_label": format_local_datetime(
-                row["registration_deadline_at"], timezone_name
-            ),
+            **present_event(row, timezone_name),
             "public_url": f"{base_url}/e/{row['token']}",
         }
         for row in rows
     ]
-
-
-def get_event(db_path: str, event_id: int) -> dict[str, Any] | None:
-    with db.open_db(db_path) as conn:
-        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
-    return dict(row) if row else None
 
 
 def get_event_by_token(db_path: str, token: str) -> dict[str, Any] | None:
@@ -185,7 +191,7 @@ def get_event_by_token(db_path: str, token: str) -> dict[str, Any] | None:
 
 
 def get_event_detail(
-    db_path: str, event_id: int, timezone_name: str = "Asia/Taipei"
+    db_path: str, event_id: int, timezone_name: str
 ) -> dict[str, Any] | None:
     with db.open_db(db_path) as conn:
         row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
@@ -203,18 +209,13 @@ def get_event_detail(
             ).fetchall()
             group_rows.append({**dict(group), "options": [dict(o) for o in options]})
 
-    event = dict(row)
-    event["status_label"] = STATUS_LABELS.get(event["status"], event["status"])
-    event["starts_label"] = format_local_datetime(event["starts_at"], timezone_name)
-    event["deadline_label"] = format_local_datetime(
-        event["registration_deadline_at"], timezone_name
-    )
+    event = present_event(row, timezone_name)
     event["groups"] = group_rows
     return event
 
 
 def rotate_token(db_path: str, event_id: int, now: datetime) -> str | None:
-    stamp = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+    stamp = utc_stamp(now)
     with db.open_db(db_path) as conn:
         with conn:
             exists = conn.execute(

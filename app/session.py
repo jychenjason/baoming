@@ -1,8 +1,9 @@
 """Signed cookie sessions with per-request security flags.
 
-Starlette's session middleware decides the ``Secure`` flag once, at startup.
-Behind a TLS-terminating proxy the scheme is only known per request, so this
-middleware sets the flag from the request instead.
+Adapted from ``starlette.middleware.sessions.SessionMiddleware`` (MIT).
+Starlette decides the ``Secure`` flag once, at startup; behind a
+TLS-terminating proxy the scheme is only known per request, so this middleware
+sets the flag from the request instead.
 """
 
 from __future__ import annotations

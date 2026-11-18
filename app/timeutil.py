@@ -27,3 +27,7 @@ def format_local_datetime(value: str | None, timezone_name: str) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%d %H:%M")
+
+
+def utc_stamp(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")

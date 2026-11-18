@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from tests.support import csrf_from, sign_in, submit_login
+from tests.support import ADMIN_PASSWORD, csrf_from, sign_in, submit_login
 
 
 def test_login_form_asks_for_password(client):
@@ -29,7 +29,7 @@ def test_wrong_password_shows_error_without_granting_access(client):
 
 
 def test_login_without_csrf_token_is_rejected(client):
-    response = client.post("/admin/login", data={"password": "admin-test-password"})
+    response = client.post("/admin/login", data={"password": ADMIN_PASSWORD})
 
     assert response.status_code == 400
     assert client.get("/admin/events", follow_redirects=False).status_code == 303
