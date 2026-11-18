@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}{{ event.title }}｜活動報名{% endblock %}
+
+{% block content %}
+<h1>{{ event.title }}</h1>
+
+{% if event.status == 'draft' %}
+<p class="notice" role="status">活動尚未開放</p>
+{% elif event.status == 'closed' %}
+<p class="notice" role="status">本活動已截止報名</p>
+{% endif %}
+
+<dl class="details">
+  <dt>活動開始時間</dt>
+  <dd>{{ event.starts_label }}</dd>
+  {% if event.location %}
+  <dt>地點</dt>
+  <dd>{{ event.location }}</dd>
+  {% endif %}
+  {% if event.registration_deadline_at %}
+  <dt>報名截止時間</dt>
+  <dd>{{ event.deadline_label }}</dd>
+  {% endif %}
+</dl>
+
+{% if event.description %}
+<div class="pre-line">{{ event.description }}</div>
+{% endif %}
+{% endblock %}

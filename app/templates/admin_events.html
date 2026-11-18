@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}活動列表｜活動報名{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>活動列表</h1>
+  <form method="post" action="/admin/logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="button" type="submit">登出</button>
+  </form>
+</div>
+
+<p><a class="button primary" href="/admin/events/new">建立活動</a></p>
+
+{% if events %}
+<ul class="event-list">
+  {% for event in events %}
+  <li class="card" data-event-id="{{ event.id }}" data-status="{{ event.status }}">
+    <h2><a href="/admin/events/{{ event.id }}">{{ event.title }}</a></h2>
+    <p>狀態：{{ event.status_label }}</p>
+    <p>報名數：{{ event.registration_count }}</p>
+    <p>報名截止：{{ event.deadline_label }}</p>
+    <label for="public-link-{{ event.id }}">公開連結</label>
+    <div class="copy-row">
+      <input id="public-link-{{ event.id }}" class="copy" type="text" readonly value="{{ event.public_url }}">
+      <button class="button" type="button" data-copy-target="public-link-{{ event.id }}">複製</button>
+    </div>
+    <p><a href="/e/{{ event.token }}">開啟公開頁</a></p>
+    <form method="post" action="/admin/events/{{ event.id }}/rotate-token"
+          onsubmit="return confirm('重新產生後，舊連結會立即失效。確定要繼續嗎？')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <button class="button" type="submit">重新產生連結</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>還沒有活動。建立第一個活動，取得公開連結並分享給參加者。</p>
+{% endif %}
+
+<script>
+document.addEventListener("click", function (event) {
+  var button = event.target.closest("[data-copy-target]");
+  if (!button) return;
+  var input = document.getElementById(button.dataset.copyTarget);
+  if (!input) return;
+  input.select();
+  var done = function () { button.textContent = "已複製"; };
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(input.value).then(done);
+  } else {
+    document.execCommand("copy");
+    done();
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}{{ event.title }}｜活動報名{% endblock %}
+
+{% block content %}
+<p><a href="/admin/events">返回活動列表</a></p>
+
+<h1>{{ event.title }}</h1>
+<p>狀態：{{ event.status_label }}</p>
+
+<dl class="details">
+  <dt>說明</dt>
+  <dd class="pre-line">{{ event.description or '—' }}</dd>
+  <dt>地點</dt>
+  <dd>{{ event.location or '—' }}</dd>
+  <dt>活動開始時間</dt>
+  <dd>{{ event.starts_label }}</dd>
+  <dt>報名截止時間</dt>
+  <dd>{{ event.deadline_label }}</dd>
+</dl>
+
+<h2>選項群組</h2>
+{% for group in event.groups %}
+<section class="card">
+  <h3>{{ group.title }}{% if group.required %}（必填）{% else %}（選填）{% endif %}</h3>
+  <ul>
+    {% for option in group.options %}
+    <li>{{ option.label }}{% if not option.is_active %}（已停用）{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% else %}
+<p>這個活動還沒有選項群組。</p>
+{% endfor %}
+{% endblock %}

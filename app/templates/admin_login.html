@@ -4,6 +4,19 @@
 
 {% block content %}
 <h1>管理員登入</h1>
-<p>管理員登入功能尚未開放。</p>
+
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="/admin/login" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+
+  <label for="password">密碼</label>
+  <input id="password" name="password" type="password" required autocomplete="current-password">
+
+  <button class="button primary" type="submit">登入</button>
+</form>
+
 <p><a href="/">回首頁</a></p>
 {% endblock %}
