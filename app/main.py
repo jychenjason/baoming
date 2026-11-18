@@ -433,6 +433,9 @@ def create_app(
         if outcome == "invalid":
             return render_public_form(request, event, raw, choice_errors)
         if outcome == "conflict" and registration_id is not None and existing is not None:
+            existing = registrations.registration_for_id(
+                settings.db_path, event["id"], registration_id
+            ) or existing
             return templates.TemplateResponse(
                 request,
                 "registration_confirm.html",
@@ -461,6 +464,14 @@ def create_app(
         if not _math_gate_passed(request, token):
             return RedirectResponse(f"/e/{token}", status_code=303)
         form = await csrf_protected_form(request)
+        raw = participant_values(form)
+        if form.get("action") == "cancel":
+            if registration_id_for(request, token) is None:
+                return render_public_form(
+                    request, event, raw, {},
+                    "此姓名已有報名，請確認姓名是否正確，或聯絡管理員。",
+                )
+            return render_public_form(request, event, raw, {})
         limiter: FailureLimiter = request.app.state.registration_limiter
         ip = client_ip(request)
         if limiter.is_blocked(ip):
@@ -470,7 +481,6 @@ def create_app(
                 status_code=429,
             )
         limiter.record_failure(ip)
-        raw = participant_values(form)
         data, errors = registrations.validate_form(raw)
         if errors:
             return render_public_form(request, event, raw, errors)

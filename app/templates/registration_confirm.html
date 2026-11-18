@@ -9,6 +9,7 @@
   <h2>目前資料</h2>
   <p>姓名：{{ existing.name }}</p>
   <p>出席狀態：{{ '出席' if existing.attendance == 'attending' else '不出席' }}</p>
+  {% for choice in existing.choice_details %}<p>{{ choice.group_title }}：{{ choice.option_label }}{% if choice.disabled %}（已停用）{% endif %}</p>{% endfor %}
   {% if existing.note %}<p>備註：{{ existing.note }}</p>{% endif %}
 </section>
 <section class="card" aria-label="準備覆蓋的資料">
@@ -25,6 +26,6 @@
   <input type="hidden" name="note" value="{{ values.note }}">
   {% for group in groups %}{% set selected = values.get("group_" ~ group.id, "") %}{% if selected %}<input type="hidden" name="group_{{ group.id }}" value="{{ selected }}">{% endif %}{% endfor %}
   <button class="button primary" type="submit">確認覆蓋</button>
-  <a class="button" href="/e/{{ request.path_params.token }}">返回修改</a>
+  <button class="button" type="submit" name="action" value="cancel">返回修改</button>
 </form>
 {% endblock %}

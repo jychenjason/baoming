@@ -81,10 +81,28 @@ def registration_for_id(db_path: str, event_id: int, registration_id: int) -> di
         if row is None:
             return None
         choices = conn.execute(
-            "SELECT group_id, option_id FROM registration_choices WHERE registration_id = ?",
+            """SELECT rc.group_id, rc.option_id, rc.group_title, rc.option_label,
+                      o.is_active
+               FROM registration_choices rc
+               LEFT JOIN options o ON o.id = rc.option_id
+               WHERE rc.registration_id = ?""",
             (registration_id,),
         ).fetchall()
-    return {**dict(row), "choices": {f"group_{choice['group_id']}": str(choice['option_id']) for choice in choices}}
+    return {
+        **dict(row),
+        "choices": {
+            f"group_{choice['group_id']}": str(choice["option_id"])
+            for choice in choices
+        },
+        "choice_details": [
+            {
+                "group_title": choice["group_title"],
+                "option_label": choice["option_label"],
+                "disabled": not bool(choice["is_active"]),
+            }
+            for choice in choices
+        ],
+    }
 
 
 def save_registration(

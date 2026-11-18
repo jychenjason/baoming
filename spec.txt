@@ -104,7 +104,7 @@
 | id | INTEGER PK | |
 | event_id | INTEGER NOT NULL | 外鍵 → events |
 | kind | TEXT NOT NULL | `attendance` / `custom` |
-| title | TEXT NOT NULL | 群組標題，例如「主餐」 |
+| title | TEXT NOT NULL | 群組標題，例如「主餐」，1–50 字 |
 | required | INTEGER NOT NULL | 1＝必填、0＝選填；出席群組固定為 1 |
 | sort_order | INTEGER NOT NULL | 顯示順序 |
 | created_at | TEXT NOT NULL | |
@@ -112,6 +112,7 @@
 規則：
 
 - 每個活動建立時自動產生一個 `kind='attendance'` 的群組，標題固定「是否出席」，不可刪除、不可改為選填。
+- 同一活動內群組標題經 Unicode NFKC、去除前後空白、合併連續空白及 casefold 後必須唯一（含固定出席群組）。
 - `kind='custom'` 的群組僅在參與者選擇「出席」時顯示與送出。
 - v1 所有群組皆為單選。
 
@@ -263,7 +264,7 @@ draft ──(管理員開放)──> open ──(管理員關閉／到達截止�
 - 編輯活動：所有欄位與群組／選項皆可修改；可新增群組、調整順序、停用選項。
 - 停用或刪除已被選擇的選項時，需顯示二次確認，說明既有報名將保留原選項文字。
 - 狀態操作：開放、關閉、重新開放。
-- 複製活動：複製標題（加註「（複本）」）、說明、地點、群組與選項，狀態為 `draft`，不含任何報名資料。
+- 複製活動：複製標題（加註「（複本）」）、說明、地點、開始時間、截止時間、群組與選項，狀態為 `draft`，不含任何報名資料。
 - 重新產生公開連結 token：二次確認後舊連結立即失效。
 
 ### 8.3 報名管理
