@@ -5,6 +5,10 @@
 {% block content %}
 <p><a href="/admin/events">返回活動列表</a></p>
 <p><a class="button" href="/admin/events/{{ event.id }}/registrations">管理報名名單</a></p>
+<p class="inline-actions">
+  <a class="button" href="/admin/events/{{ event.id }}/export.csv">匯出 CSV</a>
+  <a class="button" href="/admin/events/{{ event.id }}/export.json">匯出 JSON</a>
+</p>
 <h1>{{ event.title }}</h1>
 <p>狀態：{{ event.effective_status_label }}{% if event.status == 'open' and event.effective_status == 'closed' %}（已到截止時間）{% endif %}</p>
 

@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import db, events, registrations
+from app import db, events, exports, registrations
 from app.config import Settings
 from app.logging import configure_logging
 from app.middleware import install_request_logging
@@ -304,6 +304,28 @@ def create_app(
     @app.get("/admin/events/{event_id}/registrations", response_class=HTMLResponse)
     def admin_registration_list(request: Request, event_id: int):
         return render_admin_roster(request, event_id)
+
+    @app.get("/admin/events/{event_id}/export.csv")
+    def admin_event_export_csv(event_id: int):
+        content = exports.csv_export(settings.db_path, event_id, settings.timezone)
+        if content is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return Response(
+            content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="event-{event_id}-registrations.csv"'},
+        )
+
+    @app.get("/admin/events/{event_id}/export.json")
+    def admin_event_export_json(event_id: int):
+        content = exports.json_export(settings.db_path, event_id, settings.timezone)
+        if content is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return Response(
+            content,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="event-{event_id}-registrations.json"'},
+        )
 
     @app.get("/admin/events/{event_id}/registrations/{registration_id}/edit",
              response_class=HTMLResponse)

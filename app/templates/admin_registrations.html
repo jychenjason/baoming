@@ -4,6 +4,10 @@
 {% block content %}
 <p><a href="/admin/events/{{ event.id }}">返回活動管理</a></p>
 <h1>{{ event.title }}｜管理報名</h1>
+<p class="inline-actions">
+  <a class="button" href="/admin/events/{{ event.id }}/export.csv">匯出 CSV</a>
+  <a class="button" href="/admin/events/{{ event.id }}/export.json">匯出 JSON</a>
+</p>
 {% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
 <section class="stats" aria-label="報名統計">
   <p>總報名：{{ total }}</p><p>出席：{{ attending }}</p>
