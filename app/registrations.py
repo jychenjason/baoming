@@ -143,7 +143,7 @@ def save_registration(
 def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> dict:
     with db.open_db(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, name, attendance, updated_at, created_at FROM registrations WHERE event_id = ? ORDER BY created_at, id",
+            "SELECT id, name, attendance, note, updated_at, created_at FROM registrations WHERE event_id = ? ORDER BY created_at, id",
             (event_id,),
         ).fetchall()
     registrations = [
