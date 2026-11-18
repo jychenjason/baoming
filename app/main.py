@@ -175,6 +175,7 @@ def create_app(
                     settings.db_path,
                     base_url=str(request.base_url).rstrip("/"),
                     timezone_name=settings.timezone,
+                    now=app.state.clock(),
                 )
             },
         )
@@ -207,6 +208,27 @@ def create_app(
     def admin_event_detail(request: Request, event_id: int):
         return render_event_admin(request, event_id)
 
+    @app.post("/admin/events/{event_id}/edit")
+    async def admin_event_edit(request: Request, event_id: int):
+        form = await csrf_protected_form(request)
+        raw = {name: _form_text(form.get(name)) for name in events.FORM_FIELDS}
+        data, errors = events.validate_event_form(raw, settings.timezone)
+        if errors:
+            return render_event_admin(request, event_id, message="請修正活動資料欄位。",
+                                      values=raw, errors=errors)
+        if not events.update_event(settings.db_path, event_id, data, app.state.clock()):
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+
+    @app.post("/admin/events/{event_id}/status/{status}")
+    async def admin_event_status(request: Request, event_id: int, status: str):
+        await csrf_protected_form(request)
+        error = events.set_event_status(settings.db_path, event_id, status, app.state.clock())
+        if error == "找不到活動。":
+            raise HTTPException(status_code=404, detail=error)
+        return render_event_admin(request, event_id,
+                                  message=error or ("活動已開放。" if status == "open" else "活動已關閉。"))
+
     @app.post("/admin/events/{event_id}/rotate-token")
     async def admin_event_rotate_token(request: Request, event_id: int):
         await csrf_protected_form(request)
@@ -225,14 +247,15 @@ def create_app(
 
     def render_event_admin(request: Request, event_id: int, *, message=None,
                            pending_disable=None, values=None,
-                           status_code=200):
-        event = events.get_event_detail(settings.db_path, event_id, settings.timezone)
+                           errors=None, status_code=200):
+        event = events.get_event_detail(settings.db_path, event_id, settings.timezone,
+                                        app.state.clock())
         if event is None:
             raise HTTPException(status_code=404, detail="找不到活動。")
         return templates.TemplateResponse(
             request, "admin_event_detail.html",
             {"event": event, "message": message, "pending_disable": pending_disable,
-             "values": values or {}},
+             "values": values or {}, "errors": errors or {}},
             status_code=status_code,
         )
 
@@ -342,7 +365,7 @@ def create_app(
                 request,
                 "event_math_gate.html",
                 {
-                    "event": events.present_event(event, settings.timezone),
+                    "event": events.present_event(event, settings.timezone, app.state.clock()),
                     "left": problem["left"],
                     "right": problem["right"],
                     "error": None,
@@ -364,7 +387,7 @@ def create_app(
             request,
             "event_public.html",
             {
-                "event": events.present_event(event, settings.timezone),
+                "event": events.present_event(event, settings.timezone, app.state.clock()),
                 "values": values,
                 "groups": registrations.custom_groups(settings.db_path, event["id"]),
                 "errors": {},
@@ -386,7 +409,7 @@ def create_app(
             request,
             "event_public.html",
             {
-                "event": events.present_event(event, settings.timezone),
+                "event": events.present_event(event, settings.timezone, app.state.clock()),
                 "values": values,
                 "groups": registrations.custom_groups(settings.db_path, event["id"]),
                 "errors": errors,
@@ -394,6 +417,11 @@ def create_app(
             },
             status_code=status_code,
         )
+
+    def registration_unavailable_message(event):
+        if event["status"] == "draft":
+            return "本活動尚未開放報名。"
+        return "本活動已截止報名。"
 
     def registration_id_for(request: Request, token: str):
         value = request.session.get(REGISTRATION_SESSION_PREFIX + token)
@@ -440,7 +468,7 @@ def create_app(
                 request,
                 "registration_confirm.html",
                 {
-                    "event": events.present_event(event, settings.timezone),
+                    "event": events.present_event(event, settings.timezone, app.state.clock()),
                     "values": raw,
                     "groups": registrations.custom_groups(settings.db_path, event["id"]),
                     "existing": existing,
@@ -453,7 +481,7 @@ def create_app(
             )
         return render_public_form(
             request, event, raw, {},
-            "本活動尚未開放或已截止報名。", status_code=403,
+            registration_unavailable_message(event), status_code=403,
         )
 
     @app.post("/e/{token}/register/confirm", response_class=HTMLResponse)
@@ -504,7 +532,7 @@ def create_app(
             )
         return render_public_form(
             request, event, raw, {},
-            "本活動尚未開放或已截止報名。", status_code=403,
+            registration_unavailable_message(event), status_code=403,
         )
 
     @app.get("/e/{token}/registrations", response_class=HTMLResponse)
@@ -520,7 +548,7 @@ def create_app(
         return templates.TemplateResponse(
             request,
             "event_registrations.html",
-            {"event": events.present_event(event, settings.timezone), **data},
+            {"event": events.present_event(event, settings.timezone, app.state.clock()), **data},
         )
 
     @app.post("/e/{token}/verify", response_class=HTMLResponse)
@@ -571,7 +599,7 @@ def create_app(
             request,
             "event_math_gate.html",
             {
-                "event": events.present_event(event, settings.timezone),
+                "event": events.present_event(event, settings.timezone, app.state.clock()),
                 "left": left,
                 "right": right,
                 "error": "答案不正確，請再試一次。",

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from app import db
-from app.timeutil import format_local_datetime, parse_local_datetime, utc_stamp
+from app.timeutil import format_local_datetime, local_datetime_input, parse_local_datetime, utc_stamp
 
 TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ234567"
 TOKEN_LENGTH = 10
@@ -152,7 +152,7 @@ def create_event(
 
 
 def present_event(
-    row: Mapping[str, Any], timezone_name: str
+    row: Mapping[str, Any], timezone_name: str, now: datetime
 ) -> dict[str, Any]:
     """Attach the labels every admin/public view renders for an event."""
     event = dict(row)
@@ -161,11 +161,29 @@ def present_event(
     event["deadline_label"] = format_local_datetime(
         event["registration_deadline_at"], timezone_name
     )
+    event["effective_status"] = effective_status(event, now)
+    event["effective_status_label"] = STATUS_LABELS.get(
+        event["effective_status"], event["effective_status"]
+    )
+    event["starts_input"] = local_datetime_input(event["starts_at"], timezone_name)
+    event["deadline_input"] = local_datetime_input(
+        event["registration_deadline_at"], timezone_name
+    )
     return event
 
 
+def effective_status(row: Mapping[str, Any], now: datetime) -> str:
+    if row["status"] == "open" and row["registration_deadline_at"]:
+        deadline = datetime.fromisoformat(row["registration_deadline_at"])
+        checked_now = now if now.tzinfo else now.replace(tzinfo=deadline.tzinfo)
+        if checked_now >= deadline:
+            return "closed"
+    return str(row["status"])
+
+
 def list_events(
-    db_path: str, *, base_url: str = "", timezone_name: str = "Asia/Taipei"
+    db_path: str, *, base_url: str = "", timezone_name: str = "Asia/Taipei",
+    now: datetime,
 ) -> list[dict[str, Any]]:
     with db.open_db(db_path) as conn:
         rows = conn.execute(
@@ -180,7 +198,7 @@ def list_events(
 
     return [
         {
-            **present_event(row, timezone_name),
+            **present_event(row, timezone_name, now),
             "public_url": f"{base_url}/e/{row['token']}",
         }
         for row in rows
@@ -194,7 +212,7 @@ def get_event_by_token(db_path: str, token: str) -> dict[str, Any] | None:
 
 
 def get_event_detail(
-    db_path: str, event_id: int, timezone_name: str
+    db_path: str, event_id: int, timezone_name: str, now: datetime
 ) -> dict[str, Any] | None:
     with db.open_db(db_path) as conn:
         row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
@@ -212,9 +230,58 @@ def get_event_detail(
             ).fetchall()
             group_rows.append({**dict(group), "options": [dict(o) for o in options]})
 
-    event = present_event(row, timezone_name)
+    event = present_event(row, timezone_name, now)
     event["groups"] = group_rows
     return event
+
+
+def update_event(db_path: str, event_id: int, data: EventInput, now: datetime) -> bool:
+    stamp = utc_stamp(now)
+    with db.open_db(db_path) as conn, conn:
+        cursor = conn.execute(
+            """UPDATE events SET title = ?, description = ?, location = ?, starts_at = ?,
+               registration_deadline_at = ?, updated_at = ? WHERE id = ?""",
+            (data.title, data.description, data.location, data.starts_at,
+             data.registration_deadline_at, stamp, event_id),
+        )
+        return cursor.rowcount == 1
+
+
+def set_event_status(db_path: str, event_id: int, status: str, now: datetime) -> str | None:
+    if status not in {"open", "closed"}:
+        return "無效的活動狀態。"
+    stamp = utc_stamp(now)
+    with db.open_db(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        event = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        if event is None:
+            return "找不到活動。"
+        if status == "closed" and event["status"] != "open":
+            return "草稿活動尚未開放，無法關閉。"
+        if status == "open":
+            if event["registration_deadline_at"]:
+                deadline = datetime.fromisoformat(event["registration_deadline_at"])
+                checked_now = now if now.tzinfo else now.replace(tzinfo=deadline.tzinfo)
+                if checked_now >= deadline:
+                    return "報名截止時間已過，請先修改截止時間再重新開放。"
+            groups = conn.execute(
+                """SELECT g.id, g.title, g.required,
+                          COUNT(CASE WHEN o.is_active = 1 THEN 1 END) AS active_count
+                   FROM option_groups g LEFT JOIN options o ON o.group_id = g.id
+                   WHERE g.event_id = ? AND g.kind = 'custom'
+                   GROUP BY g.id ORDER BY g.sort_order, g.id""",
+                (event_id,),
+            ).fetchall()
+            for group in groups:
+                if int(group["active_count"]) < 2:
+                    return f"群組「{group['title']}」至少需要兩個啟用選項才能開放。"
+                if group["required"] and int(group["active_count"]) < 1:
+                    return f"必填群組「{group['title']}」需要至少一個可選答案。"
+        conn.execute(
+            "UPDATE events SET status = ?, updated_at = ? WHERE id = ?",
+            (status, stamp, event_id),
+        )
+    return None
 
 
 def normalize_group_title(value: str) -> str:

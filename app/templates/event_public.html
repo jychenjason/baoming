@@ -5,9 +5,9 @@
 {% block content %}
 <h1>{{ event.title }}</h1>
 
-{% if event.status == 'draft' %}
+{% if event.effective_status == 'draft' %}
 <p class="notice" role="status">活動尚未開放</p>
-{% elif event.status == 'closed' %}
+{% elif event.effective_status == 'closed' %}
 <p class="notice" role="status">本活動已截止報名</p>
 {% else %}
 <p class="notice" role="status">活動開放中</p>
@@ -31,7 +31,7 @@
   <p>通過活動連結驗證的人都能查看報名者姓名、出席狀態、各群組選擇、備註及最後更新時間。請勿在備註填寫敏感資訊。</p>
 </section>
 
-{% if event.status == 'open' %}
+{% if event.effective_status == 'open' %}
 <section id="registration-form" aria-label="活動報名">
   <h2>活動報名</h2>
   <p>請填寫下方報名表。名單會向通過活動連結驗證的人公開，請勿在備註填寫敏感資訊。</p>
@@ -94,7 +94,7 @@
 {% elif message %}
 <p class="error" role="alert">{{ message }}</p>
 {% endif %}
-{% if event.status != 'draft' %}
+{% if event.effective_status != 'draft' %}
 <p><a class="button" href="/e/{{ request.path_params.token }}/registrations">已報名資料</a></p>
 {% endif %}
 {% endblock %}

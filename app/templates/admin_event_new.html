@@ -23,12 +23,12 @@
          value="{{ values.get('location', '') }}">
   {% if errors.get('location') %}<p class="field-error" role="alert">{{ errors.get('location') }}</p>{% endif %}
 
-  <label for="starts_at">活動開始時間</label>
+  <label for="starts_at">活動開始時間（台北時間）</label>
   <input id="starts_at" name="starts_at" type="datetime-local"
          value="{{ values.get('starts_at', '') }}">
   {% if errors.get('starts_at') %}<p class="field-error" role="alert">{{ errors.get('starts_at') }}</p>{% endif %}
 
-  <label for="registration_deadline_at">報名截止時間</label>
+  <label for="registration_deadline_at">報名截止時間（台北時間）</label>
   <input id="registration_deadline_at" name="registration_deadline_at" type="datetime-local"
          value="{{ values.get('registration_deadline_at', '') }}">
   {% if errors.get('registration_deadline_at') %}<p class="field-error" role="alert">{{ errors.get('registration_deadline_at') }}</p>{% endif %}

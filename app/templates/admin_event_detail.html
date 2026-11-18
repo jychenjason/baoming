@@ -5,7 +5,7 @@
 {% block content %}
 <p><a href="/admin/events">返回活動列表</a></p>
 <h1>{{ event.title }}</h1>
-<p>狀態：{{ event.status_label }}</p>
+<p>狀態：{{ event.effective_status_label }}{% if event.status == 'open' and event.effective_status == 'closed' %}（已到截止時間）{% endif %}</p>
 
 {% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
 
@@ -15,6 +15,43 @@
   <dt>活動開始時間</dt><dd>{{ event.starts_label }}</dd>
   <dt>報名截止時間</dt><dd>{{ event.deadline_label }}</dd>
 </dl>
+
+<div class="inline-actions">
+  {% if event.effective_status == 'open' %}
+  <form method="post" action="/admin/events/{{ event.id }}/status/closed">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="button" type="submit">手動關閉報名</button>
+  </form>
+  {% else %}
+  <form method="post" action="/admin/events/{{ event.id }}/status/open">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="button primary" type="submit">{% if event.status == 'draft' %}開放報名{% else %}重新開放報名{% endif %}</button>
+  </form>
+  {% endif %}
+</div>
+
+<section class="card">
+  <h2>活動資訊</h2>
+  <form method="post" action="/admin/events/{{ event.id }}/edit" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="title">活動標題（必填）</label>
+    <input id="title" name="title" maxlength="100" required value="{{ values.get('title', event.title) }}">
+    {% if errors.get('title') %}<p class="field-error" role="alert">{{ errors.title }}</p>{% endif %}
+    <label for="description">說明</label>
+    <textarea id="description" name="description" rows="5" maxlength="2000">{{ values.get('description', event.description or '') }}</textarea>
+    {% if errors.get('description') %}<p class="field-error" role="alert">{{ errors.description }}</p>{% endif %}
+    <label for="location">地點</label>
+    <input id="location" name="location" maxlength="200" value="{{ values.get('location', event.location or '') }}">
+    {% if errors.get('location') %}<p class="field-error" role="alert">{{ errors.location }}</p>{% endif %}
+    <label for="starts_at">活動開始時間（台北時間）</label>
+    <input id="starts_at" name="starts_at" type="datetime-local" value="{{ values.get('starts_at', event.starts_input) }}">
+    {% if errors.get('starts_at') %}<p class="field-error" role="alert">{{ errors.starts_at }}</p>{% endif %}
+    <label for="registration_deadline_at">報名截止時間（台北時間）</label>
+    <input id="registration_deadline_at" name="registration_deadline_at" type="datetime-local" value="{{ values.get('registration_deadline_at', event.deadline_input) }}">
+    {% if errors.get('registration_deadline_at') %}<p class="field-error" role="alert">{{ errors.registration_deadline_at }}</p>{% endif %}
+    <button class="button" type="submit">儲存活動資訊</button>
+  </form>
+</section>
 
 <form method="post" action="/admin/events/{{ event.id }}/duplicate">
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">

@@ -5,6 +5,7 @@
 
 {% block content %}
 <h1>{{ event.title }}｜已報名資料</h1>
+<p class="notice" role="status">{% if event.effective_status == 'open' %}活動開放中{% elif event.effective_status == 'draft' %}活動尚未開放{% else %}本活動已截止報名{% endif %}</p>
 <p class="notice">通過活動連結驗證的人都能查看姓名、出席狀態、備註與最後更新時間。請勿在備註填寫敏感資訊。</p>
 <section class="stats" aria-label="報名統計">
   <p>總報名：{{ total }}</p>

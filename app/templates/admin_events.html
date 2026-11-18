@@ -18,7 +18,7 @@
   {% for event in events %}
   <li class="card" data-event-id="{{ event.id }}" data-status="{{ event.status }}">
     <h2><a href="/admin/events/{{ event.id }}">{{ event.title }}</a></h2>
-    <p>狀態：{{ event.status_label }}</p>
+    <p>狀態：{{ event.effective_status_label }}{% if event.status == 'open' and event.effective_status == 'closed' %}（已到截止時間）{% endif %}</p>
     <p>報名數：{{ event.registration_count }}</p>
     <p>報名截止：{{ event.deadline_label }}</p>
     <label for="public-link-{{ event.id }}">公開連結</label>
