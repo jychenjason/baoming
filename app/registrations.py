@@ -293,7 +293,7 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
                     continue
                 counts.setdefault(key, 0)
                 active_by_key[key] = bool(option["is_active"])
-        denominator = attending
+        denominator = len(selected)
         group_stats.append({
             "title": group["title"],
             "required": bool(group["required"]),
@@ -307,7 +307,7 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
                 }
                 for (option_id, label), count in sorted(counts.items())
             ],
-            "unselected": max(0, denominator - len(selected)) if not group["required"] else None,
+            "unselected": max(0, attending - len(selected)) if not group["required"] else None,
         })
     return {
         "registrations": registrations,

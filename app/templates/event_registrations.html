@@ -21,7 +21,7 @@
     {% for option in group.options %}
     <li>{{ option.label }}{% if option.disabled %}（已停用）{% endif %}：{{ option.count }} 人（{% if option.percent is not none %}{{ option.percent }}%{% else %}—{% endif %}）</li>
     {% endfor %}
-    {% if group.unselected is not none %}<li>未選：{{ group.unselected }} 人（{% if group.denominator %}{{ (group.unselected * 100 + group.denominator // 2) // group.denominator }}%{% else %}—{% endif %}）</li>{% endif %}
+    {% if group.unselected is not none %}<li>未選：{{ group.unselected }} 人</li>{% endif %}
   </ul>
 </section>
 {% endfor %}
