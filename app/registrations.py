@@ -106,7 +106,7 @@ def registration_for_id(db_path: str, event_id: int, registration_id: int) -> di
 
 
 def delete_registration(db_path: str, event_id: int, registration_id: int) -> bool:
-    with db.open_db(db_path) as conn:
+    with db.open_db(db_path) as conn, conn:
         cursor = conn.execute(
             "DELETE FROM registrations WHERE id = ? AND event_id = ?",
             (registration_id, event_id),
