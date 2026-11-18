@@ -87,6 +87,22 @@ def test_login_failures_from_one_address_are_rate_limited(client):
     assert "請求過於頻繁" in response.text
 
 
+def test_spoofed_forwarded_for_header_does_not_reset_the_login_limit(client):
+    csrf = csrf_from(client, "/admin/login")
+    data = {"password": "wrong-password", "csrf_token": csrf}
+
+    for index in range(5):
+        client.post(
+            "/admin/login", data=data, headers={"X-Forwarded-For": f"10.0.0.{index}"}
+        )
+
+    response = client.post(
+        "/admin/login", data=data, headers={"X-Forwarded-For": "10.0.0.99"}
+    )
+
+    assert response.status_code == 429
+
+
 def test_session_cookie_is_httponly_and_samesite_lax(client):
     response = client.get("/admin/login")
     cookies = response.headers.get_list("set-cookie")

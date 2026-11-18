@@ -68,9 +68,9 @@ def admin_is_authenticated(request: Request) -> bool:
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
+    # uvicorn's proxy-header handling rewrites request.client from
+    # X-Forwarded-For only when the peer is a trusted proxy. Trusting the
+    # header directly here would let any client pick its own rate-limit key.
     if request.client is None:
         return "unknown"
     return request.client.host

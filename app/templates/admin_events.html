@@ -47,11 +47,14 @@ document.addEventListener("click", function (event) {
   if (!input) return;
   input.select();
   var done = function () { button.textContent = "已複製"; };
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(input.value).then(done);
-  } else {
+  var copyManually = function () {
     document.execCommand("copy");
     done();
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(input.value).then(done, copyManually);
+  } else {
+    copyManually();
   }
 });
 </script>
