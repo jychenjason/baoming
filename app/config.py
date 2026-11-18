@@ -2,6 +2,13 @@ import os
 from dataclasses import dataclass
 
 
+def _require_env(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value:
+        raise RuntimeError(f"{name} is required")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: str
@@ -12,16 +19,10 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        admin_password = os.environ.get("ADMIN_PASSWORD", "")
-        session_secret = os.environ.get("SESSION_SECRET", "")
-        if not admin_password:
-            raise RuntimeError("ADMIN_PASSWORD is required")
-        if not session_secret:
-            raise RuntimeError("SESSION_SECRET is required")
         return cls(
             db_path=os.environ.get("DB_PATH", "data/app.db"),
-            admin_password=admin_password,
-            session_secret=session_secret,
+            admin_password=_require_env("ADMIN_PASSWORD"),
+            session_secret=_require_env("SESSION_SECRET"),
             timezone=os.environ.get("TZ", "Asia/Taipei"),
             cookie_secure=os.environ.get("COOKIE_SECURE", "").lower()
             in {"1", "true", "yes"},

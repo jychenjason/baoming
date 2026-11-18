@@ -6,12 +6,22 @@ from app.main import create_app
 
 
 @pytest.fixture
-def settings(tmp_path):
-    return Settings(
-        db_path=str(tmp_path / "app.db"),
-        admin_password="admin-test-password",
-        session_secret="test-session-secret",
-    )
+def make_settings(tmp_path):
+    def build(**overrides):
+        values = {
+            "db_path": str(tmp_path / "app.db"),
+            "admin_password": "admin-test-password",
+            "session_secret": "test-session-secret",
+        }
+        values.update(overrides)
+        return Settings(**values)
+
+    return build
+
+
+@pytest.fixture
+def settings(make_settings):
+    return make_settings()
 
 
 @pytest.fixture

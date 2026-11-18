@@ -8,10 +8,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
 from app.config import Settings
 from app.logging import configure_logging
+from app.middleware import install_request_logging
 
 BASE_DIR = Path(__file__).resolve().parent
 logger = configure_logging()
@@ -21,51 +23,33 @@ def create_app(
     settings: Settings | None = None,
     *,
     clock: Callable[[], datetime] | None = None,
-    captcha_factory: Callable[[], Any] | None = None,
+    math_problem_factory: Callable[[], Any] | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
 
     app = FastAPI(title="活動報名")
     app.state.settings = settings
     app.state.clock = clock or (lambda: datetime.now(timezone.utc))
-    app.state.captcha_factory = captcha_factory
+    app.state.math_problem_factory = math_problem_factory
 
     try:
         db.init_db(settings.db_path)
     except Exception:
+        # Keep serving so /healthz can report the outage; the container stays up
+        # for diagnosis instead of crash-looping.
         logger.exception("database initialization failed")
+
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret,
+        max_age=24 * 60 * 60,
+        same_site="lax",
+        https_only=settings.cookie_secure,
+    )
+    install_request_logging(app, logger)
 
     templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-
-    @app.middleware("http")
-    async def log_request(request: Request, call_next):
-        start = time.perf_counter()
-        try:
-            response = await call_next(request)
-        except Exception:
-            duration_ms = round((time.perf_counter() - start) * 1000, 2)
-            logger.exception(
-                "request",
-                extra={
-                    "method": request.method,
-                    "path": request.url.path,
-                    "status": 500,
-                    "duration_ms": duration_ms,
-                },
-            )
-            raise
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        logger.info(
-            "request",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status": response.status_code,
-                "duration_ms": duration_ms,
-            },
-        )
-        return response
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request):

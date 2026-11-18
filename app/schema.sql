@@ -2,8 +2,8 @@ CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    location TEXT NOT NULL DEFAULT '',
+    description TEXT,
+    location TEXT,
     starts_at TEXT,
     registration_deadline_at TEXT,
     status TEXT NOT NULL DEFAULT 'draft'
