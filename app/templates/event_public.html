@@ -9,22 +9,33 @@
 <p class="notice" role="status">活動尚未開放</p>
 {% elif event.status == 'closed' %}
 <p class="notice" role="status">本活動已截止報名</p>
+{% else %}
+<p class="notice" role="status">活動開放中</p>
 {% endif %}
 
 <dl class="details">
   <dt>活動開始時間</dt>
   <dd>{{ event.starts_label }}</dd>
-  {% if event.location %}
   <dt>地點</dt>
-  <dd>{{ event.location }}</dd>
-  {% endif %}
-  {% if event.registration_deadline_at %}
+  <dd>{{ event.location or '—' }}</dd>
   <dt>報名截止時間</dt>
   <dd>{{ event.deadline_label }}</dd>
-  {% endif %}
 </dl>
 
 {% if event.description %}
 <div class="pre-line">{{ event.description }}</div>
+{% endif %}
+
+<section class="notice" aria-label="名單資料說明">
+  <h2>名單資料說明</h2>
+  <p>通過活動連結驗證的人都能查看報名者姓名、出席狀態、各群組選擇、備註及最後更新時間。請勿在備註填寫敏感資訊。</p>
+</section>
+
+{% if event.status == 'open' %}
+<p class="actions"><a class="button primary" href="#registration-form">前往報名</a></p>
+<section id="registration-form" aria-label="活動報名">
+  <h2>活動報名</h2>
+  <p>請填寫下方報名表。</p>
+</section>
 {% endif %}
 {% endblock %}

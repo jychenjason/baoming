@@ -1,7 +1,8 @@
 import hashlib
 import hmac
+import secrets
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,56 @@ from app.session import SessionMiddleware
 BASE_DIR = Path(__file__).resolve().parent
 logger = configure_logging()
 
+MATH_GATE_LIMIT = 20
+MATH_GATE_SESSION_PREFIX = "math_gate:"
+
 def _form_text(value) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _new_math_problem() -> tuple[int, int]:
+    left = secrets.randbelow(90) + 10
+    right = secrets.randbelow(min(9, 100 - left)) + 1
+    return left, right
+
+
+def _math_problem(request: Request) -> tuple[int, int]:
+    factory = request.app.state.math_problem_factory or _new_math_problem
+    problem = factory()
+    if (
+        not isinstance(problem, (tuple, list))
+        or len(problem) != 2
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in problem)
+    ):
+        raise ValueError("math_problem_factory must return a pair of integers")
+    left, right = problem
+    if not 10 <= left <= 99 or not 1 <= right <= 9 or left + right > 100:
+        raise ValueError("math_problem_factory returned a problem outside the allowed range")
+    return left, right
+
+
+def _math_gate_key(token: str) -> str:
+    return f"{MATH_GATE_SESSION_PREFIX}{token}"
+
+
+def _math_gate_passed(request: Request, token: str) -> bool:
+    raw = request.session.get(_math_gate_key(token))
+    if not isinstance(raw, str):
+        return False
+    try:
+        verified_at = datetime.fromisoformat(raw)
+    except ValueError:
+        request.session.pop(_math_gate_key(token), None)
+        return False
+    if verified_at.tzinfo is None:
+        verified_at = verified_at.replace(tzinfo=timezone.utc)
+    now = request.app.state.clock()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if now - verified_at >= timedelta(hours=24) or now < verified_at:
+        request.session.pop(_math_gate_key(token), None)
+        return False
+    return True
 
 
 def create_app(
@@ -47,6 +96,7 @@ def create_app(
     app.state.clock = clock or (lambda: datetime.now(timezone.utc))
     app.state.math_problem_factory = math_problem_factory
     app.state.login_limiter = FailureLimiter(LOGIN_FAILURE_LIMIT)
+    app.state.math_gate_limiter = FailureLimiter(MATH_GATE_LIMIT)
 
     try:
         db.init_db(settings.db_path)
@@ -174,10 +224,85 @@ def create_app(
         event = events.get_event_by_token(settings.db_path, token)
         if event is None:
             raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            challenge_key = _math_gate_key(token) + ":challenge"
+            problem = request.session.get(challenge_key)
+            if not isinstance(problem, dict) or not all(
+                isinstance(problem.get(key), int) for key in ("left", "right", "answer")
+            ):
+                left, right = _math_problem(request)
+                problem = {"left": left, "right": right, "answer": left + right}
+                request.session[challenge_key] = problem
+            return templates.TemplateResponse(
+                request,
+                "event_math_gate.html",
+                {
+                    "event": events.present_event(event, settings.timezone),
+                    "left": problem["left"],
+                    "right": problem["right"],
+                    "error": None,
+                },
+            )
         return templates.TemplateResponse(
             request,
             "event_public.html",
             {"event": events.present_event(event, settings.timezone)},
+        )
+
+    @app.post("/e/{token}/verify", response_class=HTMLResponse)
+    async def public_event_verify(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+
+        form = await csrf_protected_form(request)
+        limiter: FailureLimiter = request.app.state.math_gate_limiter
+        ip = client_ip(request)
+        if limiter.is_blocked(ip):
+            return templates.TemplateResponse(
+                request,
+                "error.html",
+                {"status_code": 429, "message": "請求過於頻繁，請稍後再試。"},
+                status_code=429,
+            )
+        limiter.record_failure(ip)
+
+        challenge_key = _math_gate_key(token) + ":challenge"
+        problem = request.session.get(challenge_key)
+        submitted = _form_text(form.get("answer")).strip()
+        correct = (
+            isinstance(problem, dict)
+            and isinstance(problem.get("answer"), int)
+            and submitted.isdecimal()
+            and len(submitted) <= 3
+            and int(submitted) == problem["answer"]
+        )
+        if correct:
+            now = app.state.clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            request.session[_math_gate_key(token)] = now.isoformat()
+            request.session.pop(challenge_key, None)
+            return RedirectResponse(f"/e/{token}", status_code=303)
+
+        left, right = _math_problem(request)
+        request.session[challenge_key] = {
+            "left": left,
+            "right": right,
+            "answer": left + right,
+        }
+        return templates.TemplateResponse(
+            request,
+            "event_math_gate.html",
+            {
+                "event": events.present_event(event, settings.timezone),
+                "left": left,
+                "right": right,
+                "error": "答案不正確，請再試一次。",
+            },
+            status_code=200,
         )
 
     @app.get("/healthz")
