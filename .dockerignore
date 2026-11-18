@@ -1,0 +1,16 @@
+.git
+.venv
+.agents
+.scratch
+docs
+tests
+data
+backups
+.env
+.env.example
+__pycache__
+*.py[cod]
+*.md
+spec.txt
+pytest.ini
+requirements-dev.txt
