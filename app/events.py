@@ -364,12 +364,18 @@ def save_option(db_path: str, event_id: int, group_id: int, option_id: int | Non
                 (group_id, label, order, stamp),
             )
         else:
-            exists = conn.execute(
-                "SELECT 1 FROM options WHERE id = ? AND group_id = ?",
+            existing = conn.execute(
+                "SELECT label FROM options WHERE id = ? AND group_id = ?",
                 (option_id, group_id),
             ).fetchone()
-            if exists is None:
+            if existing is None:
                 return "找不到自訂選項。"
+            uses = conn.execute(
+                "SELECT COUNT(*) FROM registration_choices WHERE option_id = ?",
+                (option_id,),
+            ).fetchone()[0]
+            if uses and label != existing["label"]:
+                return "此選項已有報名使用，請停用舊選項並新增替代選項；歷史文字會保留。"
             conn.execute("UPDATE options SET label = ? WHERE id = ?", (label, option_id))
         conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (stamp, event_id))
     return None

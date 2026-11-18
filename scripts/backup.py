@@ -13,6 +13,12 @@ from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.csv_safety import spreadsheet_safe
+
+
 DB = Path(os.environ.get("DB_HOST_PATH", ROOT / "data/app.db"))
 BACKUPS = Path(os.environ.get("BACKUP_DIR", ROOT / "backups"))
 TZ = ZoneInfo(os.environ.get("TZ", "Asia/Taipei"))
@@ -22,14 +28,6 @@ RETENTION_DAYS = int(os.environ.get("BACKUP_RETENTION_DAYS", "30"))
 def safe_slug(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-_")[:48]
     return slug or "event"
-
-
-def spreadsheet_safe(value: object) -> object:
-    """Keep untrusted text from being evaluated as a spreadsheet formula."""
-    if isinstance(value, str) and (value.lstrip().startswith(("=", "+", "-", "@"))
-                                   or value.startswith(("\t", "\r", "\n"))):
-        return "'" + value
-    return value
 
 
 def local_datetime(value: str | None) -> str:

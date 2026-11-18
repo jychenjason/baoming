@@ -9,17 +9,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from app import db
+from app.csv_safety import spreadsheet_safe
 from app.timeutil import format_local_datetime
-
-
-def _spreadsheet_safe(value: object) -> str:
-    text = "" if value is None else str(value)
-    probe = text
-    while probe and (probe[0].isspace() or ord(probe[0]) < 32):
-        probe = probe[1:]
-    if probe.startswith(("=", "+", "-", "@")):
-        return "'" + text
-    return text
 
 
 def _localize_timestamp(value: object, timezone_name: str) -> object:
@@ -88,13 +79,13 @@ def csv_export(db_path: str, event_id: int, timezone_name: str) -> bytes | None:
     writer = csv.writer(output, dialect="excel", lineterminator="\r\n")
     headers = ["姓名", "出席狀態", "備註", "建立時間", "最後更新時間"]
     headers.extend(group["title"] for group in groups)
-    writer.writerow([_spreadsheet_safe(value) for value in headers])
+    writer.writerow([spreadsheet_safe(value) for value in headers])
     for rid, registration in registrations.items():
         values = [registration[key] for key in ("name", "attendance", "note", "created", "updated")]
         for group in groups:
             answer = answers.get((rid, int(group["id"])))
             values.append((answer[0] + "（已停用）") if answer and not answer[1] else answer[0] if answer else "")
-        writer.writerow([_spreadsheet_safe(value) for value in values])
+        writer.writerow([spreadsheet_safe(value) for value in values])
     return b"\xef\xbb\xbf" + output.getvalue().encode("utf-8")
 
 

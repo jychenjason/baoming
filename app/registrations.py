@@ -264,7 +264,7 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
         ).fetchall()
         choices = conn.execute(
             """SELECT rc.registration_id, rc.group_id, rc.option_id, rc.option_label, rc.group_title,
-                      o.is_active
+                      r.attendance, o.is_active
                FROM registration_choices rc
                JOIN registrations r ON r.id = rc.registration_id
                LEFT JOIN options o ON o.id = rc.option_id
