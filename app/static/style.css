@@ -98,6 +98,122 @@ h1 {
   font: inherit;
 }
 
+.form fieldset {
+  display: grid;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+
+.form fieldset label {
+  font-weight: 400;
+}
+
+.form input[type="radio"] {
+  width: auto;
+}
+
+.form input[type="checkbox"] {
+  width: auto;
+}
+
+.inline-actions,
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.option-row {
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.inline-actions form {
+  margin: 0;
+}
+
+.option-row > .form {
+  flex: 1;
+  margin: 0;
+}
+
+.stats,
+.roster {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.group-stats {
+  margin: 1rem 0;
+}
+
+.group-stats h2 {
+  margin-top: 0;
+}
+
+.group-stats ul {
+  margin-bottom: 0;
+}
+
+.roster-table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+.roster-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.roster-table th,
+.roster-table td {
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.roster-cards {
+  display: none;
+}
+
+.roster-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.button-secondary {
+  background: var(--muted);
+}
+
+@media (max-width: 767px) {
+  .roster-table-wrap {
+    display: none;
+  }
+
+  .roster-cards {
+    display: grid;
+  }
+}
+
+.stats {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.stats p,
+.roster-card p {
+  margin: 0.25rem 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
 .form .button {
   justify-self: start;
   margin-top: 1rem;

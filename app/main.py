@@ -1,17 +1,18 @@
 import hashlib
 import hmac
+import secrets
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import db, events
+from app import db, events, exports, registrations
 from app.config import Settings
 from app.logging import configure_logging
 from app.middleware import install_request_logging
@@ -30,8 +31,58 @@ from app.session import SessionMiddleware
 BASE_DIR = Path(__file__).resolve().parent
 logger = configure_logging()
 
+MATH_GATE_LIMIT = 20
+REGISTRATION_LIMIT = 20
+MATH_GATE_SESSION_PREFIX = "math_gate:"
+REGISTRATION_SESSION_PREFIX = "registration:"
+
 def _form_text(value) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _new_math_problem() -> tuple[int, int]:
+    left = secrets.randbelow(90) + 10
+    right = secrets.randbelow(min(9, 100 - left)) + 1
+    return left, right
+
+
+def _math_problem(request: Request) -> tuple[int, int]:
+    factory = request.app.state.math_problem_factory or _new_math_problem
+    problem = factory()
+    if (
+        not isinstance(problem, (tuple, list))
+        or len(problem) != 2
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in problem)
+    ):
+        raise ValueError("math_problem_factory must return a pair of integers")
+    left, right = problem
+    if not 10 <= left <= 99 or not 1 <= right <= 9 or left + right > 100:
+        raise ValueError("math_problem_factory returned a problem outside the allowed range")
+    return left, right
+
+
+def _math_gate_key(token: str) -> str:
+    return f"{MATH_GATE_SESSION_PREFIX}{token}"
+
+
+def _math_gate_passed(request: Request, token: str) -> bool:
+    raw = request.session.get(_math_gate_key(token))
+    if not isinstance(raw, str):
+        return False
+    try:
+        verified_at = datetime.fromisoformat(raw)
+    except ValueError:
+        request.session.pop(_math_gate_key(token), None)
+        return False
+    if verified_at.tzinfo is None:
+        verified_at = verified_at.replace(tzinfo=timezone.utc)
+    now = request.app.state.clock()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if now - verified_at >= timedelta(hours=24) or now < verified_at:
+        request.session.pop(_math_gate_key(token), None)
+        return False
+    return True
 
 
 def create_app(
@@ -47,6 +98,8 @@ def create_app(
     app.state.clock = clock or (lambda: datetime.now(timezone.utc))
     app.state.math_problem_factory = math_problem_factory
     app.state.login_limiter = FailureLimiter(LOGIN_FAILURE_LIMIT)
+    app.state.math_gate_limiter = FailureLimiter(MATH_GATE_LIMIT)
+    app.state.registration_limiter = FailureLimiter(REGISTRATION_LIMIT)
 
     try:
         db.init_db(settings.db_path)
@@ -122,6 +175,7 @@ def create_app(
                     settings.db_path,
                     base_url=str(request.base_url).rstrip("/"),
                     timezone_name=settings.timezone,
+                    now=app.state.clock(),
                 )
             },
         )
@@ -152,14 +206,28 @@ def create_app(
 
     @app.get("/admin/events/{event_id}", response_class=HTMLResponse)
     def admin_event_detail(request: Request, event_id: int):
-        event = events.get_event_detail(
-            settings.db_path, event_id, settings.timezone
-        )
-        if event is None:
+        return render_event_admin(request, event_id)
+
+    @app.post("/admin/events/{event_id}/edit")
+    async def admin_event_edit(request: Request, event_id: int):
+        form = await csrf_protected_form(request)
+        raw = {name: _form_text(form.get(name)) for name in events.FORM_FIELDS}
+        data, errors = events.validate_event_form(raw, settings.timezone)
+        if errors:
+            return render_event_admin(request, event_id, message="請修正活動資料欄位。",
+                                      values=raw, errors=errors)
+        if not events.update_event(settings.db_path, event_id, data, app.state.clock()):
             raise HTTPException(status_code=404, detail="找不到活動。")
-        return templates.TemplateResponse(
-            request, "admin_event_detail.html", {"event": event}
-        )
+        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+
+    @app.post("/admin/events/{event_id}/status/{status}")
+    async def admin_event_status(request: Request, event_id: int, status: str):
+        await csrf_protected_form(request)
+        error = events.set_event_status(settings.db_path, event_id, status, app.state.clock())
+        if error == "找不到活動。":
+            raise HTTPException(status_code=404, detail=error)
+        return render_event_admin(request, event_id,
+                                  message=error or ("活動已開放。" if status == "open" else "活動已關閉。"))
 
     @app.post("/admin/events/{event_id}/rotate-token")
     async def admin_event_rotate_token(request: Request, event_id: int):
@@ -169,15 +237,513 @@ def create_app(
             raise HTTPException(status_code=404, detail="找不到活動。")
         return RedirectResponse("/admin/events", status_code=303)
 
+    @app.post("/admin/events/{event_id}/duplicate")
+    async def admin_event_duplicate(request: Request, event_id: int):
+        await csrf_protected_form(request)
+        duplicate_id = events.duplicate_event(settings.db_path, event_id, app.state.clock())
+        if duplicate_id is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return RedirectResponse(f"/admin/events/{duplicate_id}", status_code=303)
+
+    def render_event_admin(request: Request, event_id: int, *, message=None,
+                           pending_disable=None, values=None,
+                           errors=None, status_code=200):
+        event = events.get_event_detail(settings.db_path, event_id, settings.timezone,
+                                        app.state.clock())
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return templates.TemplateResponse(
+            request, "admin_event_detail.html",
+            {"event": event, "message": message, "pending_disable": pending_disable,
+             "values": values or {}, "errors": errors or {}},
+            status_code=status_code,
+        )
+
+    def render_admin_roster(request: Request, event_id: int, *, message=None,
+                            values=None, errors=None, edit_registration=None,
+                            delete_registration=None, status_code=200):
+        event = events.get_event_detail(settings.db_path, event_id, settings.timezone,
+                                        app.state.clock())
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        roster_data = registrations.roster(settings.db_path, event_id, settings.timezone)
+        groups = registrations.custom_groups(settings.db_path, event_id)
+        if edit_registration is not None:
+            detail = registrations.registration_for_id(
+                settings.db_path, event_id, edit_registration)
+            if detail is not None:
+                for group in groups:
+                    selected = detail["choices"].get(f"group_{group['id']}")
+                    if selected and all(str(option["id"]) != selected
+                                         for option in group["options"]):
+                        with db.open_db(settings.db_path) as conn:
+                            historical = conn.execute(
+                                "SELECT id, label FROM options WHERE id = ? AND group_id = ?",
+                                (int(selected), group["id"]),
+                            ).fetchone()
+                        if historical:
+                            group["options"].append({**dict(historical), "disabled": True})
+        admin_rows = []
+        for row in roster_data["registrations"]:
+            detail = registrations.registration_for_id(
+                settings.db_path, event_id, int(row["id"]))
+            admin_rows.append({**row, "form_values": {
+                "name": detail["name"], "attendance": detail["attendance"],
+                "note": detail["note"] or "", **detail["choices"]}})
+        return templates.TemplateResponse(
+            request, "admin_registrations.html",
+            {"event": event, **roster_data,
+             "groups": groups,
+             "admin_rows": admin_rows,
+             "message": message, "values": values or {}, "errors": errors or {},
+             "edit_registration": edit_registration,
+             "delete_registration": delete_registration},
+            status_code=status_code,
+        )
+
+    @app.get("/admin/events/{event_id}/registrations", response_class=HTMLResponse)
+    def admin_registration_list(request: Request, event_id: int):
+        return render_admin_roster(request, event_id)
+
+    @app.get("/admin/events/{event_id}/export.csv")
+    def admin_event_export_csv(event_id: int):
+        content = exports.csv_export(settings.db_path, event_id, settings.timezone)
+        if content is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return Response(
+            content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="event-{event_id}-registrations.csv"'},
+        )
+
+    @app.get("/admin/events/{event_id}/export.json")
+    def admin_event_export_json(event_id: int):
+        content = exports.json_export(settings.db_path, event_id, settings.timezone)
+        if content is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        return Response(
+            content,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="event-{event_id}-registrations.json"'},
+        )
+
+    @app.get("/admin/events/{event_id}/registrations/{registration_id}/edit",
+             response_class=HTMLResponse)
+    def admin_registration_edit_page(request: Request, event_id: int, registration_id: int):
+        detail = registrations.registration_for_id(settings.db_path, event_id, registration_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        values = {"name": detail["name"], "attendance": detail["attendance"],
+                  "note": detail["note"] or "", **detail["choices"]}
+        return render_admin_roster(request, event_id, edit_registration=registration_id,
+                                   values=values)
+
+    @app.post("/admin/events/{event_id}/registrations")
+    async def admin_registration_create(request: Request, event_id: int):
+        form = await csrf_protected_form(request)
+        raw = {key: _form_text(value) for key, value in form.items()
+               if key != "csrf_token"}
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=errors)
+        outcome, _, _, choice_errors = registrations.save_registration(
+            settings.db_path, event_id, data, app.state.clock(), administrator=True)
+        if outcome == "created":
+            return RedirectResponse(f"/admin/events/{event_id}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=choice_errors)
+        message = ("此姓名已有報名，請編輯既有資料。" if outcome == "conflict"
+                   else "活動目前未開放報名，無法新增代報名。")
+        return render_admin_roster(request, event_id, message=message, values=raw)
+
+    @app.post("/admin/events/{event_id}/registrations/{registration_id}/edit")
+    async def admin_registration_edit(request: Request, event_id: int, registration_id: int):
+        form = await csrf_protected_form(request)
+        raw = {key: _form_text(value) for key, value in form.items()
+               if key != "csrf_token"}
+        existing = registrations.registration_for_id(settings.db_path, event_id, registration_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=errors,
+                                       edit_registration=registration_id)
+        outcome, _, _, choice_errors = registrations.save_registration(
+            settings.db_path, event_id, data, app.state.clock(),
+            authorized_registration_id=registration_id, confirm_overwrite=True,
+            administrator=True)
+        if outcome == "updated":
+            return RedirectResponse(f"/admin/events/{event_id}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_admin_roster(request, event_id, message="請修正報名資料。",
+                                       values=raw, errors=choice_errors,
+                                       edit_registration=registration_id)
+        message = ("姓名與另一筆報名重複，請修改姓名。" if outcome == "conflict"
+                   else "無法更新報名資料，請重新整理後再試。")
+        return render_admin_roster(request, event_id, message=message, values=raw,
+                                   edit_registration=registration_id)
+
+    @app.post("/admin/events/{event_id}/registrations/{registration_id}/delete")
+    async def admin_registration_delete(request: Request, event_id: int, registration_id: int):
+        form = await csrf_protected_form(request)
+        existing = registrations.registration_for_id(settings.db_path, event_id, registration_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        if form.get("confirm") != "1":
+            return render_admin_roster(request, event_id, delete_registration=existing)
+        if not registrations.delete_registration(settings.db_path, event_id, registration_id):
+            raise HTTPException(status_code=404, detail="找不到報名資料。")
+        return RedirectResponse(f"/admin/events/{event_id}/registrations", status_code=303)
+
+    @app.post("/admin/events/{event_id}/groups")
+    async def admin_group_create(request: Request, event_id: int):
+        form = await csrf_protected_form(request)
+        error, _ = events.save_group(
+            settings.db_path, event_id, None, _form_text(form.get("title")),
+            form.get("required") == "1", app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "已新增群組。",
+            values={"new-group-title": _form_text(form.get("title")),
+                    "required-new-group": form.get("required") == "1"},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}")
+    async def admin_group_update(request: Request, event_id: int, group_id: int):
+        form = await csrf_protected_form(request)
+        error, _ = events.save_group(
+            settings.db_path, event_id, group_id, _form_text(form.get("title")),
+            form.get("required") == "1", app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "群組已更新。",
+            values={f"group-title-{group_id}": _form_text(form.get("title")),
+                    f"required-group-{group_id}": form.get("required") == "1"},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options")
+    async def admin_option_create(request: Request, event_id: int, group_id: int):
+        form = await csrf_protected_form(request)
+        error = events.save_option(
+            settings.db_path, event_id, group_id, None,
+            _form_text(form.get("label")), app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "已新增選項。",
+            values={f"new-option-{group_id}": _form_text(form.get("label"))},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options/{option_id}")
+    async def admin_option_update(request: Request, event_id: int, group_id: int, option_id: int):
+        form = await csrf_protected_form(request)
+        error = events.save_option(
+            settings.db_path, event_id, group_id, option_id,
+            _form_text(form.get("label")), app.state.clock(),
+        )
+        return render_event_admin(
+            request, event_id, message=error or "選項已更新。",
+            values={f"option-label-{option_id}": _form_text(form.get("label"))},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options/{option_id}/disable")
+    async def admin_option_disable(request: Request, event_id: int, group_id: int, option_id: int):
+        form = await csrf_protected_form(request)
+        confirmed = form.get("confirm") == "1"
+        success, uses, disabled = events.disable_option(
+            settings.db_path, event_id, group_id, option_id,
+            app.state.clock(), confirmed=confirmed,
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="找不到自訂選項。")
+        if not disabled:
+            warning = (
+                f"此選項已有 {uses} 筆報名使用。既有報名會保留原選項文字。"
+                if uses else "停用後此選項不再提供新報名。"
+            )
+            return render_event_admin(
+                request, event_id,
+                message=warning + "請再次確認。",
+                pending_disable=(group_id, option_id),
+            )
+        return render_event_admin(request, event_id, message="選項已停用；既有報名資料保留。")
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/order/{direction}")
+    async def admin_group_reorder(request: Request, event_id: int, group_id: int, direction: str):
+        form = await csrf_protected_form(request)
+        if not events.reorder_item(settings.db_path, event_id, None, group_id, direction, app.state.clock()):
+            raise HTTPException(status_code=404, detail="找不到自訂群組。")
+        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options/{option_id}/order/{direction}")
+    async def admin_option_reorder(request: Request, event_id: int, group_id: int,
+                                   option_id: int, direction: str):
+        await csrf_protected_form(request)
+        if not events.reorder_item(settings.db_path, event_id, group_id, option_id,
+                                   direction, app.state.clock()):
+            raise HTTPException(status_code=404, detail="找不到自訂選項。")
+        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+
     @app.get("/e/{token}", response_class=HTMLResponse)
     def public_event(request: Request, token: str):
         event = events.get_event_by_token(settings.db_path, token)
         if event is None:
             raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            challenge_key = _math_gate_key(token) + ":challenge"
+            problem = request.session.get(challenge_key)
+            if not isinstance(problem, dict) or not all(
+                isinstance(problem.get(key), int) for key in ("left", "right", "answer")
+            ):
+                left, right = _math_problem(request)
+                problem = {"left": left, "right": right, "answer": left + right}
+                request.session[challenge_key] = problem
+            return templates.TemplateResponse(
+                request,
+                "event_math_gate.html",
+                {
+                    "event": events.present_event(event, settings.timezone, app.state.clock()),
+                    "left": problem["left"],
+                    "right": problem["right"],
+                    "error": None,
+                },
+            )
+        registration_id = request.session.get(REGISTRATION_SESSION_PREFIX + token)
+        saved = (
+            registrations.registration_for_id(settings.db_path, event["id"], registration_id)
+            if isinstance(registration_id, int) and not isinstance(registration_id, bool)
+            else None
+        )
+        values = {
+            "name": saved["name"] if saved else "",
+            "attendance": saved["attendance"] if saved else "",
+            "note": saved["note"] if saved and saved["note"] else "",
+            **(saved.get("choices", {}) if saved else {}),
+        }
         return templates.TemplateResponse(
             request,
             "event_public.html",
-            {"event": events.present_event(event, settings.timezone)},
+            {
+                "event": events.present_event(event, settings.timezone, app.state.clock()),
+                "values": values,
+                "groups": registrations.custom_groups(settings.db_path, event["id"]),
+                "errors": {},
+                "message": None,
+            },
+        )
+
+    def participant_values(form) -> dict[str, str]:
+        values = {
+            "name": _form_text(form.get("name")),
+            "attendance": _form_text(form.get("attendance")),
+            "note": _form_text(form.get("note")),
+        }
+        values.update({key: _form_text(value) for key, value in form.items() if key.startswith("group_")})
+        return values
+
+    def render_public_form(request, event, values, errors, message=None, status_code=200):
+        return templates.TemplateResponse(
+            request,
+            "event_public.html",
+            {
+                "event": events.present_event(event, settings.timezone, app.state.clock()),
+                "values": values,
+                "groups": registrations.custom_groups(settings.db_path, event["id"]),
+                "errors": errors,
+                "message": message,
+            },
+            status_code=status_code,
+        )
+
+    def registration_unavailable_message(event):
+        if event["status"] == "draft":
+            return "本活動尚未開放報名。"
+        return "本活動已截止報名。"
+
+    def registration_id_for(request: Request, token: str):
+        value = request.session.get(REGISTRATION_SESSION_PREFIX + token)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @app.post("/e/{token}/register", response_class=HTMLResponse)
+    async def public_register(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+        form = await csrf_protected_form(request)
+        limiter: FailureLimiter = request.app.state.registration_limiter
+        ip = client_ip(request)
+        if limiter.is_blocked(ip):
+            return templates.TemplateResponse(
+                request, "error.html",
+                {"status_code": 429, "message": "請求過於頻繁，請稍後再試。"},
+                status_code=429,
+            )
+        limiter.record_failure(ip)
+        raw = participant_values(form)
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_public_form(request, event, raw, errors)
+        outcome, registration_id, existing, choice_errors = registrations.save_registration(
+            settings.db_path,
+            event["id"],
+            data,
+            app.state.clock(),
+            authorized_registration_id=registration_id_for(request, token),
+        )
+        if outcome == "created":
+            request.session[REGISTRATION_SESSION_PREFIX + token] = registration_id
+            return RedirectResponse(f"/e/{token}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_public_form(request, event, raw, choice_errors)
+        if outcome == "conflict" and registration_id is not None and existing is not None:
+            existing = registrations.registration_for_id(
+                settings.db_path, event["id"], registration_id
+            ) or existing
+            return templates.TemplateResponse(
+                request,
+                "registration_confirm.html",
+                {
+                    "event": events.present_event(event, settings.timezone, app.state.clock()),
+                    "values": raw,
+                    "groups": registrations.custom_groups(settings.db_path, event["id"]),
+                    "existing": existing,
+                },
+            )
+        if outcome == "conflict":
+            return render_public_form(
+                request, event, raw, {},
+                "此姓名已有報名，請確認姓名是否正確，或聯絡管理員。",
+            )
+        return render_public_form(
+            request, event, raw, {},
+            registration_unavailable_message(event), status_code=403,
+        )
+
+    @app.post("/e/{token}/register/confirm", response_class=HTMLResponse)
+    async def public_register_confirm(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+        form = await csrf_protected_form(request)
+        raw = participant_values(form)
+        if form.get("action") == "cancel":
+            if registration_id_for(request, token) is None:
+                return render_public_form(
+                    request, event, raw, {},
+                    "此姓名已有報名，請確認姓名是否正確，或聯絡管理員。",
+                )
+            return render_public_form(request, event, raw, {})
+        limiter: FailureLimiter = request.app.state.registration_limiter
+        ip = client_ip(request)
+        if limiter.is_blocked(ip):
+            return templates.TemplateResponse(
+                request, "error.html",
+                {"status_code": 429, "message": "請求過於頻繁，請稍後再試。"},
+                status_code=429,
+            )
+        limiter.record_failure(ip)
+        data, errors = registrations.validate_form(raw)
+        if errors:
+            return render_public_form(request, event, raw, errors)
+        outcome, registration_id, _, choice_errors = registrations.save_registration(
+            settings.db_path,
+            event["id"],
+            data,
+            app.state.clock(),
+            authorized_registration_id=registration_id_for(request, token),
+            confirm_overwrite=True,
+        )
+        if outcome == "updated":
+            request.session[REGISTRATION_SESSION_PREFIX + token] = registration_id
+            return RedirectResponse(f"/e/{token}/registrations", status_code=303)
+        if outcome == "invalid":
+            return render_public_form(request, event, raw, choice_errors)
+        if outcome == "conflict":
+            return render_public_form(
+                request, event, raw, {},
+                "此姓名已有報名，請確認姓名是否正確，或聯絡管理員。",
+            )
+        return render_public_form(
+            request, event, raw, {},
+            registration_unavailable_message(event), status_code=403,
+        )
+
+    @app.get("/e/{token}/registrations", response_class=HTMLResponse)
+    def public_registrations(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if not _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+        data = registrations.roster(
+            settings.db_path, event["id"], settings.timezone
+        )
+        return templates.TemplateResponse(
+            request,
+            "event_registrations.html",
+            {"event": events.present_event(event, settings.timezone, app.state.clock()), **data},
+        )
+
+    @app.post("/e/{token}/verify", response_class=HTMLResponse)
+    async def public_event_verify(request: Request, token: str):
+        event = events.get_event_by_token(settings.db_path, token)
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if _math_gate_passed(request, token):
+            return RedirectResponse(f"/e/{token}", status_code=303)
+
+        form = await csrf_protected_form(request)
+        limiter: FailureLimiter = request.app.state.math_gate_limiter
+        ip = client_ip(request)
+        if limiter.is_blocked(ip):
+            return templates.TemplateResponse(
+                request,
+                "error.html",
+                {"status_code": 429, "message": "請求過於頻繁，請稍後再試。"},
+                status_code=429,
+            )
+        limiter.record_failure(ip)
+
+        challenge_key = _math_gate_key(token) + ":challenge"
+        problem = request.session.get(challenge_key)
+        submitted = _form_text(form.get("answer")).strip()
+        correct = (
+            isinstance(problem, dict)
+            and isinstance(problem.get("answer"), int)
+            and submitted.isdecimal()
+            and len(submitted) <= 3
+            and int(submitted) == problem["answer"]
+        )
+        if correct:
+            now = app.state.clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            request.session[_math_gate_key(token)] = now.isoformat()
+            request.session.pop(challenge_key, None)
+            return RedirectResponse(f"/e/{token}", status_code=303)
+
+        left, right = _math_problem(request)
+        request.session[challenge_key] = {
+            "left": left,
+            "right": right,
+            "answer": left + right,
+        }
+        return templates.TemplateResponse(
+            request,
+            "event_math_gate.html",
+            {
+                "event": events.present_event(event, settings.timezone, app.state.clock()),
+                "left": left,
+                "right": right,
+                "error": "答案不正確，請再試一次。",
+            },
+            status_code=200,
         )
 
     @app.get("/healthz")

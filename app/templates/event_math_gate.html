@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}活動驗證｜活動報名{% endblock %}
+
+{% block content %}
+<h1>活動驗證</h1>
+<p>請回答簡單的加法題以繼續。驗證通過後，這個瀏覽器 24 小時內不必重答。</p>
+
+{% if error %}
+<p class="error" role="alert">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="/e/{{ request.path_params.token }}/verify" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <label for="answer">{{ left }} ＋ {{ right }} ＝ ?</label>
+  <input id="answer" name="answer" type="number" inputmode="numeric" required autofocus>
+  <button class="button primary" type="submit">繼續</button>
+</form>
+{% endblock %}

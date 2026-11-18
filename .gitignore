@@ -1,6 +1,7 @@
 .env
 data/
 backups/
+.deploy/
 .venv/
 __pycache__/
 *.py[cod]

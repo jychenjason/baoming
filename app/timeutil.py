@@ -29,5 +29,18 @@ def format_local_datetime(value: str | None, timezone_name: str) -> str:
     return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%d %H:%M")
 
 
+def local_datetime_input(value: str | None, timezone_name: str) -> str:
+    """Format a stored timestamp for an HTML datetime-local control."""
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%dT%H:%M")
+
+
 def utc_stamp(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="seconds")

@@ -1,0 +1,43 @@
+# Alternative stack for a host nginx/Caddy. Use with `-f docker-compose.proxy.yml`.
+services:
+  app:
+    image: event-registration:${IMAGE_TAG:-local}
+    build: .
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      DB_PATH: /app/data/app.db
+      TZ: ${TZ:-Asia/Taipei}
+      COOKIE_SECURE: "1"
+    command:
+      - uvicorn
+      - app.main:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --no-access-log
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - 172.29.0.1
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+    networks:
+      web:
+        ipv4_address: 172.29.0.2
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  web:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

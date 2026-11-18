@@ -5,26 +5,96 @@
 {% block content %}
 <h1>{{ event.title }}</h1>
 
-{% if event.status == 'draft' %}
+{% if event.effective_status == 'draft' %}
 <p class="notice" role="status">活動尚未開放</p>
-{% elif event.status == 'closed' %}
+{% elif event.effective_status == 'closed' %}
 <p class="notice" role="status">本活動已截止報名</p>
+{% else %}
+<p class="notice" role="status">活動開放中</p>
 {% endif %}
 
 <dl class="details">
   <dt>活動開始時間</dt>
   <dd>{{ event.starts_label }}</dd>
-  {% if event.location %}
   <dt>地點</dt>
-  <dd>{{ event.location }}</dd>
-  {% endif %}
-  {% if event.registration_deadline_at %}
+  <dd>{{ event.location or '—' }}</dd>
   <dt>報名截止時間</dt>
   <dd>{{ event.deadline_label }}</dd>
-  {% endif %}
 </dl>
 
 {% if event.description %}
 <div class="pre-line">{{ event.description }}</div>
+{% endif %}
+
+<section class="notice" aria-label="名單資料說明">
+  <h2>名單資料說明</h2>
+  <p>通過活動連結驗證的人都能查看報名者姓名、出席狀態、各群組選擇、備註及最後更新時間。請勿在備註填寫敏感資訊。</p>
+</section>
+
+{% if event.effective_status == 'open' %}
+<section id="registration-form" aria-label="活動報名">
+  <h2>活動報名</h2>
+  <p>請填寫下方報名表。名單會向通過活動連結驗證的人公開，請勿在備註填寫敏感資訊。</p>
+  {% if message %}<p class="error" role="alert">{{ message }}</p>{% endif %}
+  <form method="post" action="/e/{{ request.path_params.token }}/register" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="name">姓名</label>
+    <input id="name" name="name" maxlength="50" required value="{{ values.get('name', '') }}">
+    {% if errors.get('name') %}<p class="field-error" role="alert">{{ errors.get('name') }}</p>{% endif %}
+    <fieldset>
+      <legend>是否出席</legend>
+      <label><input type="radio" name="attendance" value="attending" required {% if values.get('attendance') == 'attending' %}checked{% endif %}> 出席</label>
+      <label><input type="radio" name="attendance" value="not_attending" required {% if values.get('attendance') == 'not_attending' %}checked{% endif %}> 不出席</label>
+      {% if errors.get('attendance') %}<p class="field-error" role="alert">{{ errors.get('attendance') }}</p>{% endif %}
+    </fieldset>
+    <div id="custom-groups" {% if values.get('attendance') == 'not_attending' %}hidden{% endif %}>
+      {% for group in groups %}
+      <fieldset class="custom-group" data-custom-group>
+        <legend>{{ group.title }}{% if group.required %}（必填）{% else %}（選填）{% endif %}</legend>
+        {% if not group.required %}
+        <label><input type="radio" name="group_{{ group.id }}" value="" {% if not values.get('group_' ~ group.id) %}checked{% endif %}> 不選</label>
+        {% endif %}
+        {% for option in group.options %}
+        <label><input type="radio" name="group_{{ group.id }}" value="{{ option.id }}" {% if values.get('group_' ~ group.id) == option.id|string %}checked{% endif %}> {{ option.label }}</label>
+        {% endfor %}
+        {% if errors.get('group_' ~ group.id) %}<p class="field-error" role="alert">{{ errors.get('group_' ~ group.id) }}</p>{% endif %}
+      </fieldset>
+      {% endfor %}
+      {% if errors.get('choices') %}<p class="field-error" role="alert">{{ errors.get('choices') }}</p>{% endif %}
+    </div>
+    <label for="note">備註（選填，最多 100 字）</label>
+    <textarea id="note" name="note" maxlength="100" rows="3">{{ values.get('note', '') }}</textarea>
+    {% if errors.get('note') %}<p class="field-error" role="alert">{{ errors.get('note') }}</p>{% endif %}
+    <button class="button primary" type="submit">送出報名</button>
+  </form>
+</section>
+<script>
+(() => {
+  const choices = document.getElementById('custom-groups');
+  const attendance = document.querySelectorAll('input[name="attendance"]');
+  if (!choices || !attendance.length) return;
+  const update = () => {
+    const notAttending = document.querySelector('input[name="attendance"]:checked')?.value === 'not_attending';
+    choices.hidden = notAttending;
+    choices.querySelectorAll('input').forEach((input) => {
+      input.disabled = notAttending;
+      if (notAttending) input.checked = false;
+    });
+    if (!notAttending) {
+      choices.querySelectorAll('fieldset').forEach((group) => {
+        const noChoice = group.querySelector('input[value=""]');
+        if (noChoice && !group.querySelector('input:checked')) noChoice.checked = true;
+      });
+    }
+  };
+  attendance.forEach((input) => input.addEventListener('change', update));
+  update();
+})();
+</script>
+{% elif message %}
+<p class="error" role="alert">{{ message }}</p>
+{% endif %}
+{% if event.effective_status != 'draft' %}
+<p><a class="button" href="/e/{{ request.path_params.token }}/registrations">已報名資料</a></p>
 {% endif %}
 {% endblock %}

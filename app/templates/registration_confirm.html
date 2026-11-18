@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}確認修改報名｜{{ event.title }}{% endblock %}
+
+{% block content %}
+<h1>確認修改報名</h1>
+<p>此瀏覽器持有這筆報名的修改權限。確認後會以新內容覆蓋目前資料。</p>
+<section class="card" aria-label="目前報名資料">
+  <h2>目前資料</h2>
+  <p>姓名：{{ existing.name }}</p>
+  <p>出席狀態：{{ '出席' if existing.attendance == 'attending' else '不出席' }}</p>
+  {% for choice in existing.choice_details %}<p>{{ choice.group_title }}：{{ choice.option_label }}{% if choice.disabled %}（已停用）{% endif %}</p>{% endfor %}
+  {% if existing.note %}<p>備註：{{ existing.note }}</p>{% endif %}
+</section>
+<section class="card" aria-label="準備覆蓋的資料">
+  <h2>修改後資料</h2>
+  <p>姓名：{{ values.name }}</p>
+  <p>出席狀態：{{ '出席' if values.attendance == 'attending' else '不出席' }}</p>
+  {% for group in groups %}{% set selected = values.get("group_" ~ group.id, "") %}{% if selected %}{% for option in group.options %}{% if option.id|string == selected %}<p>{{ group.title }}：{{ option.label }}</p>{% endif %}{% endfor %}{% endif %}{% endfor %}
+  {% if values.note %}<p>備註：{{ values.note }}</p>{% endif %}
+</section>
+<form method="post" action="/e/{{ request.path_params.token }}/register/confirm" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="hidden" name="name" value="{{ values.name }}">
+  <input type="hidden" name="attendance" value="{{ values.attendance }}">
+  <input type="hidden" name="note" value="{{ values.note }}">
+  {% for group in groups %}{% set selected = values.get("group_" ~ group.id, "") %}{% if selected %}<input type="hidden" name="group_{{ group.id }}" value="{{ selected }}">{% endif %}{% endfor %}
+  <button class="button primary" type="submit">確認覆蓋</button>
+  <button class="button" type="submit" name="action" value="cancel">返回修改</button>
+</form>
+{% endblock %}
