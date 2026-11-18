@@ -11,9 +11,32 @@
   <p>總報名：{{ total }}</p>
   <p>出席：{{ attending }}</p>
   <p>不出席：{{ not_attending }}</p>
+  <p>出席率：{{ (attendance_percent|string + '%') if attendance_percent is not none else '—' }}</p>
 </section>
+{% for group in group_stats %}
+<section class="card group-stats" aria-label="{{ group.title }}統計">
+  <h2>{{ group.title }}統計</h2>
+  <p class="muted">作答分母：{{ group.denominator }}</p>
+  <ul>
+    {% for option in group.options %}
+    <li>{{ option.label }}{% if option.disabled %}（已停用）{% endif %}：{{ option.count }} 人（{% if option.percent is not none %}{{ option.percent }}%{% else %}—{% endif %}）</li>
+    {% endfor %}
+    {% if group.unselected is not none %}<li>未選：{{ group.unselected }} 人（{% if group.denominator %}{{ (group.unselected * 100 + group.denominator // 2) // group.denominator }}%{% else %}—{% endif %}）</li>{% endif %}
+  </ul>
+</section>
+{% endfor %}
 {% if registrations %}
-<div class="roster">
+<div class="roster-table-wrap">
+  <table class="roster-table">
+    <thead><tr><th scope="col">姓名</th><th scope="col">出席狀態</th>{% for group in registrations[0].choices %}<th scope="col">{{ group.group_title }}</th>{% endfor %}<th scope="col">備註</th><th scope="col">最後更新</th></tr></thead>
+    <tbody>
+      {% for registration in registrations %}
+      <tr><th scope="row">{{ registration.name }}</th><td>{{ '出席' if registration.attendance == 'attending' else '不出席' }}</td>{% for choice in registration.choices %}<td>{{ choice.option_label }}{% if choice.disabled %}（已停用）{% endif %}</td>{% endfor %}<td>{{ registration.note or '—' }}</td><td>{{ registration.updated_label }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="roster roster-cards">
   {% for registration in registrations %}
   <article class="card roster-card">
     <h2>{{ registration.name }}</h2>
@@ -27,5 +50,5 @@
 {% else %}
 <p>目前尚無報名資料。</p>
 {% endif %}
-<p><a class="button" href="/e/{{ request.path_params.token }}">回報名頁</a></p>
+<p class="roster-actions"><a class="button" href="/e/{{ request.path_params.token }}">回報名頁</a><a class="button button-secondary" href="/e/{{ request.path_params.token }}">結束</a></p>
 {% endblock %}

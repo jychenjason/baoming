@@ -82,7 +82,7 @@ def registration_for_id(db_path: str, event_id: int, registration_id: int) -> di
             return None
         choices = conn.execute(
             """SELECT rc.group_id, rc.option_id, rc.group_title, rc.option_label,
-                      o.is_active
+                      o.is_active, r.attendance
                FROM registration_choices rc
                LEFT JOIN options o ON o.id = rc.option_id
                WHERE rc.registration_id = ?""",
@@ -233,7 +233,14 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
             (event_id,),
         ).fetchall()
         groups = conn.execute(
-            "SELECT id, title FROM option_groups WHERE event_id = ? AND kind = 'custom' ORDER BY sort_order, id",
+            "SELECT id, title, required FROM option_groups WHERE event_id = ? AND kind = 'custom' ORDER BY sort_order, id",
+            (event_id,),
+        ).fetchall()
+        options = conn.execute(
+            """SELECT o.id, o.group_id, o.label, o.is_active
+               FROM options o JOIN option_groups g ON g.id = o.group_id
+               WHERE g.event_id = ? AND g.kind = 'custom'
+               ORDER BY g.sort_order, o.sort_order, o.id""",
             (event_id,),
         ).fetchall()
         choices = conn.execute(
@@ -264,9 +271,55 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
         for row in rows
     ]
     attending = sum(row["attendance"] == "attending" for row in registrations)
+    group_stats = []
+    for group in groups:
+        selected = [
+            choice for choice in choices
+            if int(choice["group_id"]) == int(group["id"])
+            and choice["attendance"] == "attending"
+        ]
+        # Keep each submitted label as a separate historical answer, even when
+        # an administrator later renames the underlying option.
+        counts: dict[tuple[int, str], int] = {}
+        active_by_key: dict[tuple[int, str], bool] = {}
+        for choice in selected:
+            key = (int(choice["option_id"]), str(choice["option_label"]))
+            counts[key] = counts.get(key, 0) + 1
+            active_by_key[key] = bool(choice["is_active"])
+        for option in options:
+            if int(option["group_id"]) == int(group["id"]):
+                key = (int(option["id"]), str(option["label"]))
+                if not bool(option["is_active"]) and key not in counts:
+                    continue
+                counts.setdefault(key, 0)
+                active_by_key[key] = bool(option["is_active"])
+        denominator = attending
+        group_stats.append({
+            "title": group["title"],
+            "required": bool(group["required"]),
+            "denominator": denominator,
+            "options": [
+                {
+                    "label": label,
+                    "count": count,
+                    "percent": _integer_percent(count, denominator),
+                    "disabled": not active_by_key[(option_id, label)],
+                }
+                for (option_id, label), count in sorted(counts.items())
+            ],
+            "unselected": max(0, denominator - len(selected)) if not group["required"] else None,
+        })
     return {
         "registrations": registrations,
         "total": len(registrations),
         "attending": attending,
         "not_attending": len(registrations) - attending,
+        "attendance_percent": _integer_percent(attending, len(registrations)),
+        "group_stats": group_stats,
     }
+
+
+def _integer_percent(count: int, denominator: int) -> int | None:
+    if denominator == 0:
+        return None
+    return (count * 100 + denominator // 2) // denominator
