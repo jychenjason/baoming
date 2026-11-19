@@ -13,25 +13,52 @@
 
 <p><a class="button primary" href="/admin/events/new">建立活動</a></p>
 
+<form method="get" action="/admin/events" class="event-sort">
+  <label for="event-sort">排序方式</label>
+  <select id="event-sort" name="sort">
+    <option value="date" {% if sort_by == 'date' %}selected{% endif %}>活動日期</option>
+    <option value="status" {% if sort_by == 'status' %}selected{% endif %}>活動狀態</option>
+  </select>
+  <button class="button" type="submit">套用</button>
+</form>
+
 {% if events %}
 <ul class="event-list">
   {% for event in events %}
-  <li class="card" data-event-id="{{ event.id }}" data-status="{{ event.status }}">
-    <h2><a href="/admin/events/{{ event.id }}">{{ event.title }}</a></h2>
-    <p>狀態：{{ event.effective_status_label }}{% if event.status == 'open' and event.effective_status == 'closed' %}（已到截止時間）{% endif %}</p>
-    <p>報名數：{{ event.registration_count }}</p>
-    <p>報名截止：{{ event.deadline_label }}</p>
-    <label for="public-link-{{ event.id }}">公開連結</label>
-    <div class="copy-row">
-      <input id="public-link-{{ event.id }}" class="copy" type="text" readonly value="{{ event.public_url }}">
-      <button class="button" type="button" data-copy-target="public-link-{{ event.id }}">複製</button>
-    </div>
-    <p><a href="/e/{{ event.token }}">開啟公開頁</a></p>
-    <form method="post" action="/admin/events/{{ event.id }}/rotate-token"
-          onsubmit="return confirm('重新產生後，舊連結會立即失效。確定要繼續嗎？')">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-      <button class="button" type="submit">重新產生連結</button>
-    </form>
+  <li data-event-id="{{ event.id }}" data-status="{{ event.effective_status }}">
+    <details class="card event-card">
+      <summary>
+        <span class="event-summary-title">{{ event.title }}</span>
+        <span class="event-summary-status">{{ event.effective_status_label }}{% if event.status == 'open' and event.effective_status == 'closed' %}（已到截止時間）{% endif %}</span>
+        <span class="event-summary-date">{{ event.starts_label }}</span>
+      </summary>
+      <div class="event-card-content">
+        <p><a href="/admin/events/{{ event.id }}">管理活動</a></p>
+        <p>活動開始：{{ event.starts_label }}</p>
+        <p>報名數：{{ event.registration_count }}</p>
+        <p>報名截止：{{ event.deadline_label }}</p>
+        <label for="public-link-{{ event.id }}">公開連結</label>
+        <div class="copy-row">
+          <input id="public-link-{{ event.id }}" class="copy" type="text" readonly value="{{ event.public_url }}">
+          <button class="button" type="button" data-copy-target="public-link-{{ event.id }}">複製</button>
+        </div>
+        <p><a href="/e/{{ event.token }}">開啟公開頁</a></p>
+        <form method="post" action="/admin/events/{{ event.id }}/rotate-token"
+              onsubmit="return confirm('重新產生後，舊連結會立即失效。確定要繼續嗎？')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <button class="button" type="submit">重新產生連結</button>
+        </form>
+        {% if event.status == 'open' %}
+        <p>請先手動關閉活動，才能刪除。</p>
+        {% else %}
+        <form method="post" action="/admin/events/{{ event.id }}/delete"
+              onsubmit="return confirm('確定永久刪除此活動？活動、所有報名資料及選項將一併刪除，無法復原。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <button class="button" type="submit">刪除活動</button>
+        </form>
+        {% endif %}
+      </div>
+    </details>
   </li>
   {% endfor %}
 </ul>

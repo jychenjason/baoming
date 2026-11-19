@@ -123,6 +123,7 @@
 | id | INTEGER PK | |
 | group_id | INTEGER NOT NULL | 外鍵 → option_groups |
 | label | TEXT NOT NULL | 選項文字，1–50 字 |
+| price | INTEGER NOT NULL | 新台幣整數價格，不可小於 0；預設 0 |
 | is_active | INTEGER NOT NULL | 1＝啟用、0＝停用（軟刪除） |
 | sort_order | INTEGER NOT NULL | 顯示順序 |
 | created_at | TEXT NOT NULL | |
@@ -161,6 +162,7 @@
 | group_id | INTEGER NOT NULL | 外鍵 → option_groups |
 | option_id | INTEGER NOT NULL | 外鍵 → options |
 | option_label | TEXT NOT NULL | 送出當下的選項文字快照 |
+| option_price | INTEGER NOT NULL | 送出當下的選項價格快照 |
 | group_title | TEXT NOT NULL | 送出當下的群組標題快照 |
 
 規則：
@@ -266,6 +268,7 @@ draft ──(管理員開放)──> open ──(管理員關閉／到達截止�
 - 狀態操作：開放、關閉、重新開放。
 - 複製活動：複製標題（加註「（複本）」）、說明、地點、開始時間、截止時間、群組與選項，狀態為 `draft`，不含任何報名資料。
 - 重新產生公開連結 token：二次確認後舊連結立即失效。
+- 刪除活動：草稿或已手動關閉的活動可由管理員二次確認後永久刪除活動、群組、選項、報名及報名選擇資料；開放中的活動（即使已過報名截止時間）必須先手動關閉才能刪除。既有備份檔依備份保留政策輪替，不會立即清除。
 
 ### 8.3 報名管理
 
@@ -274,7 +277,7 @@ draft ──(管理員開放)──> open ──(管理員關閉／到達截止�
   - 欄位：姓名、出席狀態、備註、建立時間、最後更新時間，之後每個群組一欄（欄名為群組標題，值為選項文字；停用選項加註「（已停用）」）。
 - 匯出 JSON：完整活動結構、群組、選項與報名資料。
 - 刪除單筆報名（二次確認）。
-- v1 不提供刪除整個活動；可關閉活動並保留其報名資料。
+- 草稿或已手動關閉的活動可刪除；開放中的活動必須由管理員手動關閉後才能刪除。刪除會一併移除其線上報名資料，無法復原。
 - 代為新增報名：與參與者表單相同驗證，可指定姓名。
 - 代為修改報名：可改姓名、出席、各群組選擇、備註；改名時同樣檢查唯一性。
 
@@ -291,6 +294,7 @@ draft ──(管理員開放)──> open ──(管理員關閉／到達截止�
 | POST | `/admin/events/{id}/status` | 開放／關閉 |
 | POST | `/admin/events/{id}/rotate-token` | 重新產生連結 |
 | POST | `/admin/events/{id}/duplicate` | 複製活動 |
+| POST | `/admin/events/{id}/delete` | 刪除活動及其資料 |
 | GET | `/admin/events/{id}/registrations` | 名單與管理 |
 | POST | `/admin/events/{id}/registrations/new` | 代為新增 |
 | POST | `/admin/events/{id}/registrations/{rid}` | 代為修改 |

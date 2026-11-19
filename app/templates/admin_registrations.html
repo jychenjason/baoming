@@ -32,7 +32,7 @@
   </fieldset>
   {% for group in groups %}<fieldset><legend>{{ group.title }}{% if group.required %}（必填）{% else %}（選填）{% endif %}</legend>
     {% if not group.required %}<label><input type="radio" name="group_{{ group.id }}" value="" {% if not form_values.get('group_' ~ group.id) %}checked{% endif %}> 不選</label>{% endif %}
-    {% for option in group.options %}<label><input type="radio" name="group_{{ group.id }}" value="{{ option.id }}" {% if form_values.get('group_' ~ group.id) == option.id|string %}checked{% endif %}> {{ option.label }}{% if option.disabled %}（已停用，歷史選擇）{% endif %}</label>{% endfor %}
+    {% for option in group.options %}<label><input type="radio" name="group_{{ group.id }}" value="{{ option.id }}" {% if form_values.get('group_' ~ group.id) == option.id|string %}checked{% endif %}> {{ option.label }}（NT$ {{ option.price }}）{% if option.disabled %}（已停用，歷史選擇）{% endif %}</label>{% endfor %}
     {% if errors.get('group_' ~ group.id) %}<p class="field-error" role="alert">{{ errors.get('group_' ~ group.id) }}</p>{% endif %}
   </fieldset>{% endfor %}
   {% if errors.get('choices') %}<p class="field-error" role="alert">{{ errors.choices }}</p>{% endif %}
@@ -73,7 +73,7 @@
   </form>
   {% else %}
   <h3>{{ registration.name }}｜{{ '出席' if registration.attendance == 'attending' else '不出席' }}</h3>
-  {% for choice in registration.choices %}<p>{{ choice.group_title }}：{{ choice.option_label }}{% if choice.disabled %}（已停用）{% endif %}</p>{% endfor %}
+  {% for choice in registration.choices %}<p>{{ choice.group_title }}：{{ choice.option_label }}{% if choice.option_label != '未選' %}（NT$ {{ choice.option_price }}）{% endif %}{% if choice.disabled %}（已停用）{% endif %}</p>{% endfor %}
   <p>備註：{{ registration.note or '—' }}</p>
   <p>建立：{{ registration.created_label }}；最後更新：{{ registration.updated_label }}</p>
   <div class="inline-actions">

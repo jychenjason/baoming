@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS options (
     group_id INTEGER NOT NULL
         REFERENCES option_groups (id) ON DELETE CASCADE,
     label TEXT NOT NULL,
+    price INTEGER NOT NULL DEFAULT 0 CHECK (price >= 0),
     is_active INTEGER NOT NULL DEFAULT 1
         CHECK (is_active IN (0, 1)),
     sort_order INTEGER NOT NULL DEFAULT 0,
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS registration_choices (
     option_id INTEGER NOT NULL
         REFERENCES options (id),
     option_label TEXT NOT NULL,
+    option_price INTEGER NOT NULL DEFAULT 0 CHECK (option_price >= 0),
     group_title TEXT NOT NULL,
     UNIQUE (registration_id, group_id)
 );

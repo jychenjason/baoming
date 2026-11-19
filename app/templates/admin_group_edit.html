@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block title %}{% if group %}修改群組{% else %}新增群組{% endif %}｜{{ event.title }}{% endblock %}
+
+{% block content %}
+<p><a href="/admin/events/{{ event.id }}">返回活動</a></p>
+<h1>{% if group %}修改自訂群組{% else %}新增自訂群組{% endif %}</h1>
+<p>{{ event.title }}</p>
+{% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
+
+{% if group %}
+<section class="card">
+  <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="group-title-{{ group.id }}">群組標題</label>
+    <input id="group-title-{{ group.id }}" name="title" maxlength="50" required value="{{ values.get('group-title-' ~ group.id, group.title) }}">
+    <label><input type="checkbox" name="required" value="1" {% if values.get('required-group-' ~ group.id, group.required) %}checked{% endif %}> 必填</label>
+    <button class="button" type="submit">儲存群組</button>
+  </form>
+  <div class="inline-actions">
+    {% for direction, label in [('up', '群組上移'), ('down', '群組下移')] %}
+    <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/order/{{ direction }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <button class="button" type="submit" aria-label="{{ label }}">{{ '↑' if direction == 'up' else '↓' }}</button>
+    </form>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>選項與即時呈現</h2>
+  <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/options/edit" class="form group-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div>
+      <label for="group-options">選項（每行一項；可輸入名稱，或以「名稱,價格」輸入價格）</label>
+      <textarea id="group-options" name="options" rows="10" required>{{ values.get('group-options', group_options_text) }}</textarea>
+      <p class="muted">不輸入價格時會以 NT$ 0 儲存。排列順序依文字框由上至下。</p>
+      <button class="button primary" type="submit">儲存選項</button>
+    </div>
+    <aside class="group-preview" aria-live="polite">
+      <h3>即時呈現</h3>
+      <p class="muted" data-preview-empty>輸入選項後會即時顯示。</p>
+      <ul data-option-preview></ul>
+      <p class="field-error" data-preview-error hidden></p>
+    </aside>
+  </form>
+  <details>
+    <summary>停用既有選項</summary>
+    <ul>
+      {% for option in group.options if option.is_active %}
+      <li>
+        {{ option.label }}（NT$ {{ option.price }}）
+        <form method="post" action="/admin/events/{{ event.id }}/groups/{{ group.id }}/options/{{ option.id }}/disable"
+              onsubmit="return confirm('停用後此選項不再提供新報名。既有報名及其原選項文字會保留。確定停用？')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          {% if pending_disable == (group.id, option.id) %}<input type="hidden" name="confirm" value="1">{% endif %}
+          <button class="button" type="submit">停用</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% for option in group.options if not option.is_active %}<p class="muted">已停用：{{ option.label }}</p>{% endfor %}
+  </details>
+</section>
+<script>
+(() => {
+  const input = document.getElementById('group-options');
+  const list = document.querySelector('[data-option-preview]');
+  const empty = document.querySelector('[data-preview-empty]');
+  const error = document.querySelector('[data-preview-error]');
+  if (!input || !list) return;
+  const money = new Intl.NumberFormat('zh-TW');
+  const update = () => {
+    list.replaceChildren();
+    const lines = input.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    let invalid = false;
+    for (const line of lines) {
+      const item = document.createElement('li');
+      const parts = line.split(',');
+      const rawPrice = parts[1]?.trim() ?? '';
+      const price = parts.length === 1 ? 0 : Number(rawPrice);
+      if (parts.length > 2 || !parts[0].trim() || (parts.length === 2 && !/^\d+$/.test(rawPrice)) || price > 999999999) {
+        item.textContent = `${line}（格式需為：選項名稱，或選項名稱,價格）`;
+        item.className = 'preview-invalid';
+        invalid = true;
+      } else {
+        item.textContent = `${parts[0].trim()} — NT$ ${money.format(price)}`;
+      }
+      list.append(item);
+    }
+    empty.hidden = lines.length > 0;
+    error.hidden = !invalid;
+    error.textContent = invalid ? '請修正錯誤格式；價格須為 0 至 999,999,999 的整數，若輸入價格，每行只能包含一個逗號。' : '';
+  };
+  input.addEventListener('input', update);
+  update();
+})();
+</script>
+{% else %}
+<section class="card">
+  <form method="post" action="/admin/events/{{ event.id }}/groups" class="form group-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div>
+      <label for="new-group-title">群組標題</label>
+      <input id="new-group-title" name="title" maxlength="50" required value="{{ values.get('new-group-title', '') }}">
+      <label for="new-group-options">選項（每行一項；可輸入名稱，或以「名稱,價格」輸入價格）</label>
+      <textarea id="new-group-options" name="options" rows="8" required aria-describedby="new-group-options-help">{{ values.get('new-group-options', '') }}</textarea>
+      <p id="new-group-options-help" class="muted">例如「素食便當」價格會設為 NT$ 0；「葷食便當,120」價格為 NT$ 120。價格請輸入新台幣整數。</p>
+      <label class="checkbox-label"><input type="checkbox" name="required" value="1" {% if values.get('required-new-group', true) %}checked{% endif %}> 必填</label>
+      <button class="button primary" type="submit">新增群組</button>
+    </div>
+    <aside class="group-preview" aria-live="polite">
+      <h2>即時呈現</h2>
+      <p class="muted" data-preview-empty>輸入選項後會即時顯示。</p>
+      <ul data-option-preview></ul>
+      <p class="field-error" data-preview-error hidden></p>
+    </aside>
+  </form>
+</section>
+<script>
+(() => {
+  const input = document.getElementById('new-group-options');
+  const list = document.querySelector('[data-option-preview]');
+  const empty = document.querySelector('[data-preview-empty]');
+  const error = document.querySelector('[data-preview-error]');
+  if (!input || !list) return;
+  const money = new Intl.NumberFormat('zh-TW');
+  const update = () => {
+    list.replaceChildren();
+    const lines = input.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    let invalid = false;
+    for (const line of lines) {
+      const parts = line.split(',');
+      const item = document.createElement('li');
+      const rawPrice = parts[1]?.trim() ?? '';
+      const price = parts.length === 1 ? 0 : Number(rawPrice);
+      if (parts.length > 2 || !parts[0].trim() || (parts.length === 2 && !/^\d+$/.test(rawPrice)) || price > 999999999) {
+        item.textContent = `${line}（格式需為：選項名稱，或選項名稱,價格）`;
+        item.className = 'preview-invalid';
+        invalid = true;
+      } else {
+        item.textContent = `${parts[0].trim()} — NT$ ${money.format(price)}`;
+      }
+      list.append(item);
+    }
+    empty.hidden = lines.length > 0;
+    error.hidden = !invalid;
+    error.textContent = invalid ? '請修正錯誤格式；價格須為 0 至 999,999,999 的整數，若輸入價格，每行只能包含一個逗號。' : '';
+  };
+  input.addEventListener('input', update);
+  update();
+})();
+</script>
+{% endif %}
+{% endblock %}

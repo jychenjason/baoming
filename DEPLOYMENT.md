@@ -10,6 +10,93 @@ This deployment runs one Uvicorn worker with SQLite. The database, SQLite snapsh
 
 Copy `.env.example` to `.env`, set a unique `ADMIN_PASSWORD`, generate `SESSION_SECRET` with `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`, and set `DOMAIN`. Restrict `.env` to the deployment owner (`chmod 600 .env`). The checked-in `.env.example` is not a production secret file.
 
+## Deploy to Google Cloud Compute Engine
+
+The steps below use an Ubuntu 24.04 Compute Engine VM and the bundled Caddy setup. Run the `gcloud` and `tar` commands on your local computer from the repository directory. Replace the project, zone, VM, and domain values with yours. Authenticate first with `gcloud auth login` and select a project where you can create Compute Engine resources.
+
+Set the project and zone, then create a VM. If you already have a VM, skip its creation and use its name and zone in the commands below.
+
+```sh
+gcloud config set project PROJECT_ID
+gcloud config set compute/zone asia-east1-b
+
+gcloud compute instances create baoming-vm \
+  --machine-type=e2-small \
+  --image-family=ubuntu-2404-lts-amd64 \
+  --image-project=ubuntu-os-cloud \
+  --boot-disk-size=20GB \
+  --tags=baoming-web
+
+gcloud compute firewall-rules create baoming-allow-web \
+  --network=default \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:80,tcp:443 \
+  --source-ranges=0.0.0.0/0 \
+  --target-tags=baoming-web
+```
+
+Make sure the VM has a stable external IP and point your domain's DNS `A` record to it. Install Docker Engine and its Compose plugin on the VM using [Docker's Ubuntu installation instructions](https://docs.docker.com/engine/install/ubuntu/). Then create a deployment archive locally. The exclusions keep Git metadata, secrets, the live database, and backups out of the upload. `gcloud compute scp` transfers the archive to the VM; see [Google Cloud's file transfer guide](https://docs.cloud.google.com/compute/docs/instances/transfer-files) for additional options.
+
+```sh
+tar -czf /tmp/baoming-deploy.tar.gz \
+  --exclude='./.git' \
+  --exclude='./.env' \
+  --exclude='./.env.swp' \
+  --exclude='./data' \
+  --exclude='./backups' \
+  --exclude='./.venv' \
+  .
+
+gcloud compute scp /tmp/baoming-deploy.tar.gz \
+  baoming-vm:/tmp/baoming-deploy.tar.gz \
+  --zone=asia-east1-b
+
+gcloud compute ssh baoming-vm --zone=asia-east1-b --command \
+  'mkdir -p ~/baoming && tar -xzf /tmp/baoming-deploy.tar.gz -C ~/baoming && rm /tmp/baoming-deploy.tar.gz'
+```
+
+SSH to the VM, create its private environment file, then start the app:
+
+```sh
+gcloud compute ssh baoming-vm --zone=asia-east1-b
+cd ~/baoming
+cp .env.example .env
+nano .env
+chmod 600 .env
+sudo docker compose up -d --build
+```
+
+In `.env`, set a unique `ADMIN_PASSWORD`, generate `SESSION_SECRET` with `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`, and set `DOMAIN` to the DNS name pointing to the VM. Once DNS has propagated, check the site and health endpoint:
+
+```sh
+scripts/smoke.sh https://events.example.com
+sudo docker compose ps
+sudo docker compose logs --tail=100 app caddy
+```
+
+Keep `~/baoming/data`, `~/baoming/backups`, and `~/baoming/.env` on the VM. For archive-based updates, make a fresh archive with the same exclusions, transfer it with `gcloud compute scp`, run `./scripts/backup.sh` on the VM, stop the app, and extract the archive over `~/baoming`. Then run `sudo docker compose up -d --build --force-recreate` and smoke-check the site. The archive excludes `.git`, so this method does not use `scripts/deploy.sh`; that script requires a Git checkout and uses `git pull` for updates. Keep a copy of the prior source archive if you need to rebuild the previous version. The database backup can be restored using the instructions below.
+
+## HTTP-only deployment
+
+Use HTTPS for a public deployment. Plain HTTP does not encrypt passwords, administrator session cookies, participant names, or registration notes while they travel over the network. If HTTP is required for a temporary or private deployment, edit the files below before starting the stack.
+
+For the bundled Caddy stack, make these changes:
+
+1. In `Caddyfile`, change the first line from `{$DOMAIN} {` to `http://{$DOMAIN} {`. The explicit `http://` address tells Caddy to serve HTTP instead of enabling automatic HTTPS.
+2. In `docker-compose.yml`, set `COOKIE_SECURE: "0"` under `app.environment`. The default `"1"` marks the session cookie as HTTPS-only, so browsers will not send it over HTTP and administrator login will not persist.
+3. In `docker-compose.yml`, under `caddy.ports`, keep `"80:80"` and remove the two `443` mappings.
+4. In `.env`, set `DOMAIN` to the hostname or external IP address that users will enter in their browser. Allow inbound TCP port 80 in the VM firewall and the GCP VPC firewall.
+
+Then recreate the stack and check it over HTTP:
+
+```sh
+sudo docker compose up -d --build --force-recreate
+scripts/smoke.sh http://events.example.com
+```
+
+If you use `docker-compose.proxy.yml` behind an existing host proxy instead, set `COOKIE_SECURE: "0"` in that file and configure the proxy to send `X-Forwarded-Proto: http`. Keep the app bound to `127.0.0.1`; do not expose port 8000 directly to the internet. The proxy must still send the original `Host` and the client address in `X-Forwarded-For` as described above.
+
 ## Default: app with automatic HTTPS
 
 Allow inbound TCP ports 80 and 443 (and UDP 443 for HTTP/3), then run:

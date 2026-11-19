@@ -49,7 +49,7 @@ def csv_export(db_path: str, event_id: int, timezone_name: str) -> bytes | None:
         ).fetchall()
         rows = conn.execute(
             """SELECT r.id, r.name, r.attendance, r.note, r.created_at, r.updated_at,
-                      rc.group_id, rc.option_label, rc.option_id, o.is_active
+                      rc.group_id, rc.option_label, rc.option_price, rc.option_id, o.is_active
                FROM registrations r
                LEFT JOIN registration_choices rc ON rc.registration_id = r.id
                LEFT JOIN options o ON o.id = rc.option_id
@@ -58,7 +58,7 @@ def csv_export(db_path: str, event_id: int, timezone_name: str) -> bytes | None:
             (event_id,),
         ).fetchall()
 
-    answers: dict[tuple[int, int], tuple[str, bool]] = {}
+    answers: dict[tuple[int, int], tuple[str, int, bool]] = {}
     registrations: dict[int, dict] = {}
     for row in rows:
         rid = int(row["id"])
@@ -72,7 +72,7 @@ def csv_export(db_path: str, event_id: int, timezone_name: str) -> bytes | None:
             }
         if row["group_id"] is not None:
             answers[(rid, int(row["group_id"]))] = (
-                str(row["option_label"]), bool(row["is_active"])
+                str(row["option_label"]), int(row["option_price"]), bool(row["is_active"])
             )
 
     output = io.StringIO(newline="")
@@ -84,7 +84,10 @@ def csv_export(db_path: str, event_id: int, timezone_name: str) -> bytes | None:
         values = [registration[key] for key in ("name", "attendance", "note", "created", "updated")]
         for group in groups:
             answer = answers.get((rid, int(group["id"])))
-            values.append((answer[0] + "（已停用）") if answer and not answer[1] else answer[0] if answer else "")
+            values.append(
+                f"{answer[0]}（NT$ {answer[1]}）" + ("（已停用）" if not answer[2] else "")
+                if answer else ""
+            )
         writer.writerow([spreadsheet_safe(value) for value in values])
     return b"\xef\xbb\xbf" + output.getvalue().encode("utf-8")
 

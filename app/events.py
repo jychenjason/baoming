@@ -251,7 +251,7 @@ def set_event_status(db_path: str, event_id: int, status: str, now: datetime) ->
     if status not in {"open", "closed"}:
         return "無效的活動狀態。"
     stamp = utc_stamp(now)
-    with db.open_db(db_path) as conn:
+    with db.open_db(db_path) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         event = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         if event is None:
@@ -289,6 +289,68 @@ def normalize_group_title(value: str) -> str:
     return " ".join(normalized.split()).casefold()
 
 
+def parse_group_options(value: str) -> tuple[list[tuple[str, int]] | None, str | None]:
+    """Parse one `label[,price]` option per non-empty line; omitted prices are zero."""
+    options: list[tuple[str, int]] = []
+    for line_number, line in enumerate(value.splitlines(), start=1):
+        if not line.strip():
+            continue
+        parts = line.split(",")
+        if len(parts) > 2:
+            return None, f"第 {line_number} 行格式錯誤，請用「選項名稱」或「選項名稱,價格」輸入。"
+        label = parts[0].strip()
+        raw_price = parts[1].strip() if len(parts) == 2 else "0"
+        if not label:
+            return None, f"第 {line_number} 行缺少選項名稱。"
+        if len(label) > OPTION_LABEL_MAX:
+            return None, f"第 {line_number} 行的選項名稱不可超過 {OPTION_LABEL_MAX} 字。"
+        if not raw_price.isascii() or not raw_price.isdigit():
+            return None, f"第 {line_number} 行價格請輸入 0 或正整數。"
+        price = int(raw_price)
+        if price > 999_999_999:
+            return None, f"第 {line_number} 行價格不可超過 999,999,999。"
+        options.append((label, price))
+    if not options:
+        return None, "請至少輸入一個選項。"
+    return options, None
+
+
+def update_group_options(db_path: str, event_id: int, group_id: int,
+                         options: list[tuple[str, int]], now: datetime) -> str | None:
+    """Update active options in order, preserving option IDs used by registrations."""
+    stamp = utc_stamp(now)
+    with db.open_db(db_path) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _custom_group(conn, event_id, group_id) is None:
+            return "找不到自訂群組。"
+        existing = conn.execute(
+            "SELECT id, label FROM options WHERE group_id = ? AND is_active = 1 ORDER BY sort_order, id",
+            (group_id,),
+        ).fetchall()
+        if len(options) < len(existing):
+            return "不能直接移除既有選項；請使用停用功能。"
+        for option, (label, _price) in zip(existing, options):
+            if label != option["label"] and conn.execute(
+                "SELECT 1 FROM registration_choices WHERE option_id = ? LIMIT 1",
+                (option["id"],),
+            ).fetchone():
+                return "此選項已有報名使用，請停用舊選項並新增替代選項；歷史文字會保留。"
+        for index, (label, price) in enumerate(options):
+            if index < len(existing):
+                option = existing[index]
+                conn.execute(
+                    "UPDATE options SET label = ?, price = ?, sort_order = ? WHERE id = ?",
+                    (label, price, index, option["id"]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO options (group_id, label, price, is_active, sort_order, created_at) VALUES (?, ?, ?, 1, ?, ?)",
+                    (group_id, label, price, index, stamp),
+                )
+        conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (stamp, event_id))
+    return None
+
+
 def _event_exists(conn: sqlite3.Connection, event_id: int) -> bool:
     return conn.execute("SELECT 1 FROM events WHERE id = ?", (event_id,)).fetchone() is not None
 
@@ -301,7 +363,8 @@ def _custom_group(conn: sqlite3.Connection, event_id: int, group_id: int):
 
 
 def save_group(db_path: str, event_id: int, group_id: int | None,
-               title: str, required: bool, now: datetime) -> tuple[str | None, int | None]:
+               title: str, required: bool, now: datetime,
+               options: list[tuple[str, int]] | None = None) -> tuple[str | None, int | None]:
     title = title.strip()
     if not title:
         return "請輸入群組標題。", None
@@ -332,6 +395,11 @@ def save_group(db_path: str, event_id: int, group_id: int | None,
                 (event_id, title, int(required), order, stamp),
             )
             result_id = int(cursor.lastrowid)
+            for option_order, (label, price) in enumerate(options or []):
+                conn.execute(
+                    "INSERT INTO options (group_id, label, price, is_active, sort_order, created_at) VALUES (?, ?, ?, 1, ?, ?)",
+                    (result_id, label, price, option_order, stamp),
+                )
         else:
             conn.execute(
                 "UPDATE option_groups SET title = ?, required = ? WHERE id = ? AND event_id = ? AND kind = 'custom'",
@@ -468,11 +536,37 @@ def duplicate_event(db_path: str, event_id: int, now: datetime) -> int | None:
                 "SELECT * FROM options WHERE group_id = ? ORDER BY sort_order, id", (group["id"],)
             ).fetchall()
             conn.executemany(
-                "INSERT INTO options (group_id, label, is_active, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
-                [(new_group_id, option["label"], option["is_active"], option["sort_order"], stamp)
+                "INSERT INTO options (group_id, label, price, is_active, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                [(new_group_id, option["label"], option["price"], option["is_active"], option["sort_order"], stamp)
                  for option in options],
             )
     return new_event_id
+
+
+def delete_event(db_path: str, event_id: int) -> str:
+    """Delete a non-open event; return deleted, not_found, or must_close."""
+    with db.open_db(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        event = conn.execute(
+            "SELECT status FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        if event is None:
+            conn.rollback()
+            return "not_found"
+        if event["status"] == "open":
+            conn.rollback()
+            return "must_close"
+        conn.execute(
+            """DELETE FROM registration_choices
+               WHERE registration_id IN (
+                   SELECT id FROM registrations WHERE event_id = ?
+               )""",
+            (event_id,),
+        )
+        conn.execute("DELETE FROM registrations WHERE event_id = ?", (event_id,))
+        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        conn.commit()
+        return "deleted"
 
 
 def rotate_token(db_path: str, event_id: int, now: datetime) -> str | None:

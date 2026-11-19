@@ -23,6 +23,14 @@ def init_db(db_path: str) -> None:
     with open_db(db_path) as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        # Keep existing databases usable after adding option pricing.
+        for table, column, declaration in (
+            ("options", "price", "INTEGER NOT NULL DEFAULT 0 CHECK (price >= 0)"),
+            ("registration_choices", "option_price", "INTEGER NOT NULL DEFAULT 0 CHECK (option_price >= 0)"),
+        ):
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
         conn.commit()
 
 

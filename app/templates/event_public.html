@@ -26,11 +26,6 @@
 <div class="pre-line">{{ event.description }}</div>
 {% endif %}
 
-<section class="notice" aria-label="名單資料說明">
-  <h2>名單資料說明</h2>
-  <p>通過活動連結驗證的人都能查看報名者姓名、出席狀態、各群組選擇、備註及最後更新時間。請勿在備註填寫敏感資訊。</p>
-</section>
-
 {% if event.effective_status == 'open' %}
 <section id="registration-form" aria-label="活動報名">
   <h2>活動報名</h2>
@@ -55,7 +50,7 @@
         <label><input type="radio" name="group_{{ group.id }}" value="" {% if not values.get('group_' ~ group.id) %}checked{% endif %}> 不選</label>
         {% endif %}
         {% for option in group.options %}
-        <label><input type="radio" name="group_{{ group.id }}" value="{{ option.id }}" {% if values.get('group_' ~ group.id) == option.id|string %}checked{% endif %}> {{ option.label }}</label>
+        <label><input type="radio" name="group_{{ group.id }}" value="{{ option.id }}" {% if values.get('group_' ~ group.id) == option.id|string %}checked{% endif %}> {{ option.label }}（NT$ {{ option.price }}）</label>
         {% endfor %}
         {% if errors.get('group_' ~ group.id) %}<p class="field-error" role="alert">{{ errors.get('group_' ~ group.id) }}</p>{% endif %}
       </fieldset>

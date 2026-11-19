@@ -65,7 +65,7 @@ def custom_groups(db_path: str, event_id: int) -> list[dict]:
         result = []
         for group in groups:
             options = conn.execute(
-                "SELECT id, label FROM options WHERE group_id = ? AND is_active = 1 ORDER BY sort_order, id",
+                "SELECT id, label, price FROM options WHERE group_id = ? AND is_active = 1 ORDER BY sort_order, id",
                 (group["id"],),
             ).fetchall()
             result.append({**dict(group), "options": [dict(option) for option in options]})
@@ -81,8 +81,8 @@ def registration_for_id(db_path: str, event_id: int, registration_id: int) -> di
         if row is None:
             return None
         choices = conn.execute(
-            """SELECT rc.group_id, rc.option_id, rc.group_title, rc.option_label,
-                      o.is_active, r.attendance
+            """SELECT rc.group_id, rc.option_id, rc.group_title, rc.option_label, rc.option_price,
+                      o.is_active
                FROM registration_choices rc
                LEFT JOIN options o ON o.id = rc.option_id
                WHERE rc.registration_id = ?""",
@@ -98,6 +98,7 @@ def registration_for_id(db_path: str, event_id: int, registration_id: int) -> di
             {
                 "group_title": choice["group_title"],
                 "option_label": choice["option_label"],
+                "option_price": choice["option_price"],
                 "disabled": not bool(choice["is_active"]),
             }
             for choice in choices
@@ -149,7 +150,7 @@ def save_registration(
             ).fetchall()
             group_by_key = {f"group_{group['id']}": group for group in groups}
             choice_errors: dict[str, str] = {}
-            selected: list[tuple[int, int, str, str]] = []
+            selected: list[tuple[int, int, str, int, str]] = []
             if data.attendance == "attending":
                 for key in data.choices:
                     if key not in group_by_key:
@@ -167,7 +168,7 @@ def save_registration(
                         choice_errors[key] = f"「{group['title']}」的選項無效，請重新選擇。"
                         continue
                     option = conn.execute(
-                        "SELECT label FROM options WHERE id = ? AND group_id = ? AND "
+                        "SELECT label, price FROM options WHERE id = ? AND group_id = ? AND "
                         "(is_active = 1 OR (? = 1 AND id IN "
                         "(SELECT option_id FROM registration_choices WHERE registration_id = ?)))",
                         (option_id, group["id"], int(administrator), authorized_registration_id or -1),
@@ -175,7 +176,7 @@ def save_registration(
                     if option is None:
                         choice_errors[key] = f"「{group['title']}」的選項已失效，請重新選擇。"
                     else:
-                        selected.append((int(group["id"]), option_id, str(option["label"]), str(group["title"])))
+                        selected.append((int(group["id"]), option_id, str(option["label"]), int(option["price"]), str(group["title"])))
             if choice_errors:
                 conn.rollback()
                 return "invalid", None, None, choice_errors
@@ -213,8 +214,8 @@ def save_registration(
                 )
                 conn.execute("DELETE FROM registration_choices WHERE registration_id = ?", (rid,))
                 conn.executemany(
-                    "INSERT INTO registration_choices (registration_id, group_id, option_id, option_label, group_title) VALUES (?, ?, ?, ?, ?)",
-                    [(rid, group_id, option_id, label, title) for group_id, option_id, label, title in selected],
+                    "INSERT INTO registration_choices (registration_id, group_id, option_id, option_label, option_price, group_title) VALUES (?, ?, ?, ?, ?, ?)",
+                    [(rid, group_id, option_id, label, price, title) for group_id, option_id, label, price, title in selected],
                 )
                 conn.commit()
                 updated = conn.execute(
@@ -232,8 +233,8 @@ def save_registration(
             )
             rid = int(cursor.lastrowid)
             conn.executemany(
-                "INSERT INTO registration_choices (registration_id, group_id, option_id, option_label, group_title) VALUES (?, ?, ?, ?, ?)",
-                [(rid, group_id, option_id, label, title) for group_id, option_id, label, title in selected],
+                "INSERT INTO registration_choices (registration_id, group_id, option_id, option_label, option_price, group_title) VALUES (?, ?, ?, ?, ?, ?)",
+                [(rid, group_id, option_id, label, price, title) for group_id, option_id, label, price, title in selected],
             )
             conn.commit()
             created = conn.execute(
@@ -256,14 +257,14 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
             (event_id,),
         ).fetchall()
         options = conn.execute(
-            """SELECT o.id, o.group_id, o.label, o.is_active
+            """SELECT o.id, o.group_id, o.label, o.price, o.is_active
                FROM options o JOIN option_groups g ON g.id = o.group_id
                WHERE g.event_id = ? AND g.kind = 'custom'
                ORDER BY g.sort_order, o.sort_order, o.id""",
             (event_id,),
         ).fetchall()
         choices = conn.execute(
-            """SELECT rc.registration_id, rc.group_id, rc.option_id, rc.option_label, rc.group_title,
+            """SELECT rc.registration_id, rc.group_id, rc.option_id, rc.option_label, rc.option_price, rc.group_title,
                       r.attendance, o.is_active
                FROM registration_choices rc
                JOIN registrations r ON r.id = rc.registration_id
@@ -281,10 +282,11 @@ def roster(db_path: str, event_id: int, timezone_name: str = "Asia/Taipei") -> d
                 {
                     "group_title": choice_index[(int(row["id"]), int(group["id"]))]["group_title"],
                     "option_label": choice_index[(int(row["id"]), int(group["id"]))]["option_label"],
+                    "option_price": choice_index[(int(row["id"]), int(group["id"]))]["option_price"],
                     "disabled": not bool(choice_index[(int(row["id"]), int(group["id"]))]["is_active"]),
                 }
                 if (int(row["id"]), int(group["id"])) in choice_index
-                else {"group_title": group["title"], "option_label": "未選", "disabled": False}
+                else {"group_title": group["title"], "option_label": "未選", "option_price": 0, "disabled": False}
                 for group in groups
             ],
         }

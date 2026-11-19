@@ -87,7 +87,7 @@ def main() -> int:
                     ).fetchall()
                     for registration in registrations:
                         choices = conn.execute(
-                            "SELECT group_id, option_id, option_label FROM registration_choices "
+                            "SELECT group_id, option_id, option_label, option_price FROM registration_choices "
                             "WHERE registration_id = ?",
                             (registration["id"],),
                         ).fetchall()
@@ -109,6 +109,7 @@ def main() -> int:
                                 (choice["option_id"],),
                             ).fetchone()
                             label = choice["option_label"]
+                            label += f"（NT$ {choice['option_price']}）"
                             if active is None or not active["is_active"]:
                                 label += "（已停用）"
                             values.append(label)

@@ -167,17 +167,33 @@ def create_app(
 
     @app.get("/admin/events", response_class=HTMLResponse)
     def admin_events(request: Request):
+        sort_by = request.query_params.get("sort", "date")
+        if sort_by not in {"date", "status"}:
+            sort_by = "date"
+        event_rows = events.list_events(
+            settings.db_path,
+            base_url=str(request.base_url).rstrip("/"),
+            timezone_name=settings.timezone,
+            now=app.state.clock(),
+        )
+        if sort_by == "status":
+            status_order = {"draft": 0, "open": 1, "closed": 2}
+            event_rows.sort(key=lambda event: (
+                status_order.get(event["effective_status"], 3),
+                event["starts_at"] is None,
+                event["starts_at"] or "",
+                event["title"].casefold(),
+            ))
+        else:
+            event_rows.sort(key=lambda event: (
+                event["starts_at"] is None,
+                event["starts_at"] or "",
+                event["title"].casefold(),
+            ))
         return templates.TemplateResponse(
             request,
             "admin_events.html",
-            {
-                "events": events.list_events(
-                    settings.db_path,
-                    base_url=str(request.base_url).rstrip("/"),
-                    timezone_name=settings.timezone,
-                    now=app.state.clock(),
-                )
-            },
+            {"events": event_rows, "sort_by": sort_by},
         )
 
     @app.get("/admin/events/new", response_class=HTMLResponse)
@@ -206,7 +222,8 @@ def create_app(
 
     @app.get("/admin/events/{event_id}", response_class=HTMLResponse)
     def admin_event_detail(request: Request, event_id: int):
-        return render_event_admin(request, event_id)
+        message = "已新增選項。" if request.query_params.get("saved") == "option" else None
+        return render_event_admin(request, event_id, message=message)
 
     @app.post("/admin/events/{event_id}/edit")
     async def admin_event_edit(request: Request, event_id: int):
@@ -245,6 +262,16 @@ def create_app(
             raise HTTPException(status_code=404, detail="找不到活動。")
         return RedirectResponse(f"/admin/events/{duplicate_id}", status_code=303)
 
+    @app.post("/admin/events/{event_id}/delete")
+    async def admin_event_delete(request: Request, event_id: int):
+        await csrf_protected_form(request)
+        result = events.delete_event(settings.db_path, event_id)
+        if result == "not_found":
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        if result == "must_close":
+            raise HTTPException(status_code=409, detail="請先手動關閉活動，才能刪除。")
+        return RedirectResponse("/admin/events", status_code=303)
+
     def render_event_admin(request: Request, event_id: int, *, message=None,
                            pending_disable=None, values=None,
                            errors=None, status_code=200):
@@ -258,6 +285,33 @@ def create_app(
              "values": values or {}, "errors": errors or {}},
             status_code=status_code,
         )
+
+    def render_group_editor(request: Request, event_id: int, group_id=None, *,
+                            message=None, values=None, pending_disable=None):
+        event = events.get_event_detail(settings.db_path, event_id, settings.timezone,
+                                        app.state.clock())
+        if event is None:
+            raise HTTPException(status_code=404, detail="找不到活動。")
+        group = next((item for item in event["groups"] if item["id"] == group_id), None) if group_id else None
+        if group_id and (group is None or group["kind"] != "custom"):
+            raise HTTPException(status_code=404, detail="找不到自訂群組。")
+        return templates.TemplateResponse(
+            request, "admin_group_edit.html",
+            {"event": event, "group": group, "message": message,
+             "values": values or {}, "pending_disable": pending_disable,
+             "group_options_text": "\n".join(
+                 f"{item['label']},{item['price']}" for item in group["options"]
+                 if item["is_active"]
+             ) if group else ""},
+        )
+
+    @app.get("/admin/events/{event_id}/groups/new")
+    def admin_group_new(request: Request, event_id: int):
+        return render_group_editor(request, event_id)
+
+    @app.get("/admin/events/{event_id}/groups/{group_id}/edit")
+    def admin_group_edit_page(request: Request, event_id: int, group_id: int):
+        return render_group_editor(request, event_id, group_id)
 
     def render_admin_roster(request: Request, event_id: int, *, message=None,
                             values=None, errors=None, edit_registration=None,
@@ -278,7 +332,7 @@ def create_app(
                                          for option in group["options"]):
                         with db.open_db(settings.db_path) as conn:
                             historical = conn.execute(
-                                "SELECT id, label FROM options WHERE id = ? AND group_id = ?",
+                                "SELECT id, label, price FROM options WHERE id = ? AND group_id = ?",
                                 (int(selected), group["id"]),
                             ).fetchone()
                         if historical:
@@ -401,13 +455,19 @@ def create_app(
     @app.post("/admin/events/{event_id}/groups")
     async def admin_group_create(request: Request, event_id: int):
         form = await csrf_protected_form(request)
-        error, _ = events.save_group(
-            settings.db_path, event_id, None, _form_text(form.get("title")),
-            form.get("required") == "1", app.state.clock(),
-        )
-        return render_event_admin(
-            request, event_id, message=error or "已新增群組。",
+        raw_options = _form_text(form.get("options"))
+        options, error = events.parse_group_options(raw_options)
+        if error is None:
+            error, _ = events.save_group(
+                settings.db_path, event_id, None, _form_text(form.get("title")),
+                form.get("required") == "1", app.state.clock(), options=options,
+            )
+        if error is None:
+            return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+        return render_group_editor(
+            request, event_id, message=error,
             values={"new-group-title": _form_text(form.get("title")),
+                    "new-group-options": raw_options,
                     "required-new-group": form.get("required") == "1"},
         )
 
@@ -418,10 +478,28 @@ def create_app(
             settings.db_path, event_id, group_id, _form_text(form.get("title")),
             form.get("required") == "1", app.state.clock(),
         )
-        return render_event_admin(
-            request, event_id, message=error or "群組已更新。",
+        if error is None:
+            return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+        return render_group_editor(
+            request, event_id, group_id, message=error,
             values={f"group-title-{group_id}": _form_text(form.get("title")),
                     f"required-group-{group_id}": form.get("required") == "1"},
+        )
+
+    @app.post("/admin/events/{event_id}/groups/{group_id}/options/edit")
+    async def admin_group_options_update(request: Request, event_id: int, group_id: int):
+        form = await csrf_protected_form(request)
+        raw_options = _form_text(form.get("options"))
+        options, error = events.parse_group_options(raw_options)
+        if error is None:
+            error = events.update_group_options(
+                settings.db_path, event_id, group_id, options, app.state.clock(),
+            )
+        if error is None:
+            return RedirectResponse(f"/admin/events/{event_id}/groups/{group_id}/edit", status_code=303)
+        return render_group_editor(
+            request, event_id, group_id, message=error,
+            values={"group-options": raw_options},
         )
 
     @app.post("/admin/events/{event_id}/groups/{group_id}/options")
@@ -431,8 +509,10 @@ def create_app(
             settings.db_path, event_id, group_id, None,
             _form_text(form.get("label")), app.state.clock(),
         )
-        return render_event_admin(
-            request, event_id, message=error or "已新增選項。",
+        if error is None:
+            return RedirectResponse(f"/admin/events/{event_id}/groups/{group_id}/edit", status_code=303)
+        return render_group_editor(
+            request, event_id, group_id, message=error,
             values={f"new-option-{group_id}": _form_text(form.get("label"))},
         )
 
@@ -443,8 +523,10 @@ def create_app(
             settings.db_path, event_id, group_id, option_id,
             _form_text(form.get("label")), app.state.clock(),
         )
-        return render_event_admin(
-            request, event_id, message=error or "選項已更新。",
+        if error is None:
+            return RedirectResponse(f"/admin/events/{event_id}/groups/{group_id}/edit", status_code=303)
+        return render_group_editor(
+            request, event_id, group_id, message=error,
             values={f"option-label-{option_id}": _form_text(form.get("label"))},
         )
 
@@ -463,19 +545,19 @@ def create_app(
                 f"此選項已有 {uses} 筆報名使用。既有報名會保留原選項文字。"
                 if uses else "停用後此選項不再提供新報名。"
             )
-            return render_event_admin(
-                request, event_id,
+            return render_group_editor(
+                request, event_id, group_id,
                 message=warning + "請再次確認。",
                 pending_disable=(group_id, option_id),
             )
-        return render_event_admin(request, event_id, message="選項已停用；既有報名資料保留。")
+        return RedirectResponse(f"/admin/events/{event_id}/groups/{group_id}/edit", status_code=303)
 
     @app.post("/admin/events/{event_id}/groups/{group_id}/order/{direction}")
     async def admin_group_reorder(request: Request, event_id: int, group_id: int, direction: str):
         form = await csrf_protected_form(request)
         if not events.reorder_item(settings.db_path, event_id, None, group_id, direction, app.state.clock()):
             raise HTTPException(status_code=404, detail="找不到自訂群組。")
-        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+        return RedirectResponse(f"/admin/events/{event_id}/groups/{group_id}/edit", status_code=303)
 
     @app.post("/admin/events/{event_id}/groups/{group_id}/options/{option_id}/order/{direction}")
     async def admin_option_reorder(request: Request, event_id: int, group_id: int,
@@ -484,7 +566,7 @@ def create_app(
         if not events.reorder_item(settings.db_path, event_id, group_id, option_id,
                                    direction, app.state.clock()):
             raise HTTPException(status_code=404, detail="找不到自訂選項。")
-        return RedirectResponse(f"/admin/events/{event_id}", status_code=303)
+        return RedirectResponse(f"/admin/events/{event_id}/groups/{group_id}/edit", status_code=303)
 
     @app.get("/e/{token}", response_class=HTMLResponse)
     def public_event(request: Request, token: str):
