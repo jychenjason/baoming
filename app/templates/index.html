@@ -1,10 +1,16 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>活動報名</h1>
-<p class="lead">用一個連結完成活動報名與餐點登記，不需要註冊帳號。</p>
-
-<p class="actions">
-  <a class="button" href="/admin/login">管理員登入</a>
-</p>
+<section class="home-hero">
+  <div class="home-hero-copy">
+    <h1>把想辦的，約成一場。</h1>
+    <p class="lead">一個連結，收好報名、餐點與出席名單。參加的人不用註冊帳號，主辦的人也不用追著訊息整理回覆。</p>
+    <p class="home-actions"><a class="button primary" href="/admin/login">進入活動管理</a></p>
+  </div>
+  <aside class="home-ticket" aria-label="活動邀請票券">
+    <span class="ticket-spark" aria-hidden="true">✳</span>
+    <span class="ticket-caption">好玩的事，值得一起來。</span>
+    <span class="ticket-rule" aria-hidden="true"></span>
+  </aside>
+</section>
 {% endblock %}
